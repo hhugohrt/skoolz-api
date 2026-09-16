@@ -152,21 +152,26 @@ uploadSessionsRouter.post("/:id/photo", async (req, res) => {
       return res.status(400).json({ error: "Aucune photo reçue." });
     }
 
-    const existingPhotos = await getSessionPhotos(session.id);
-    const nextPosition = existingPhotos.length;
-    const storedFilename = `${uuid()}${path.extname(file.originalname) || ".jpg"}`;
-    const storagePath = await saveFile(file.buffer, storedFilename, file.mimetype, `sessions/${session.id}`);
+    try {
+      const existingPhotos = await getSessionPhotos(session.id);
+      const nextPosition = existingPhotos.length;
+      const storedFilename = `${uuid()}${path.extname(file.originalname) || ".jpg"}`;
+      const storagePath = await saveFile(file.buffer, storedFilename, file.mimetype, `sessions/${session.id}`);
 
-    await run(
-      "INSERT INTO upload_session_photos (id, session_id, storage_path, mime_type, original_name, position, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-      [uuid(), session.id, storagePath, file.mimetype, file.originalname, nextPosition, new Date().toISOString()],
-    );
+      await run(
+        "INSERT INTO upload_session_photos (id, session_id, storage_path, mime_type, original_name, position, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        [uuid(), session.id, storagePath, file.mimetype, file.originalname, nextPosition, new Date().toISOString()],
+      );
 
-    if (session.status === "pending") {
-      await run("UPDATE upload_sessions SET status = 'received' WHERE id = ?", [session.id]);
+      if (session.status === "pending") {
+        await run("UPDATE upload_sessions SET status = 'received' WHERE id = ?", [session.id]);
+      }
+
+      res.status(201).json({ ok: true, photoCount: nextPosition + 1 });
+    } catch (uploadErr) {
+      console.error("Erreur lors de l'enregistrement de la photo:", uploadErr);
+      res.status(500).json({ error: "Impossible d'enregistrer cette photo." });
     }
-
-    res.status(201).json({ ok: true, photoCount: nextPosition + 1 });
   });
 });
 
