@@ -85,7 +85,7 @@ export async function serializeCourse(row: CourseRow) {
     chapter: row.chapter,
     status: row.status,
     errorMessage: row.error_message,
-    photoCount: countRow?.count ?? 0,
+    photoCount: Number(countRow?.count ?? 0),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };

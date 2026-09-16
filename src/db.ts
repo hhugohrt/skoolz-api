@@ -1,35 +1,18 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createClient, type InValue } from "@libsql/client";
+import pg from "pg";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DB_PATH = path.join(__dirname, "..", "data.sqlite");
 
 // En local (dev), on écrit dans un fichier SQLite classique — aucun compte requis.
-// En production, TURSO_DATABASE_URL/TURSO_AUTH_TOKEN pointent vers une base Turso hébergée
-// (même moteur SQLite, mais persistante et accessible depuis les fonctions serverless Vercel).
-const url = process.env.TURSO_DATABASE_URL ?? `file:${DB_PATH}`;
-const authToken = process.env.TURSO_AUTH_TOKEN;
+// En production sur Vercel, POSTGRES_URL (fourni automatiquement quand tu crées une base
+// Vercel Postgres et la relies au projet) fait basculer sur Postgres, qui persiste correctement
+// entre les invocations des fonctions serverless.
+const usePostgres = Boolean(process.env.POSTGRES_URL);
 
-const client = createClient(authToken ? { url, authToken } : { url });
-
-export async function queryAll<T>(sql: string, args: InValue[] = []): Promise<T[]> {
-  const rs = await client.execute({ sql, args });
-  return rs.rows as unknown as T[];
-}
-
-export async function queryOne<T>(sql: string, args: InValue[] = []): Promise<T | undefined> {
-  const rows = await queryAll<T>(sql, args);
-  return rows[0];
-}
-
-export async function run(sql: string, args: InValue[] = []): Promise<void> {
-  await client.execute({ sql, args });
-}
-
-await client.executeMultiple(`
-  PRAGMA foreign_keys = ON;
-
+const SCHEMA = `
   CREATE TABLE IF NOT EXISTS users (
     id TEXT PRIMARY KEY,
     email TEXT UNIQUE NOT NULL,
@@ -120,7 +103,47 @@ await client.executeMultiple(`
     created_at TEXT NOT NULL
   );
   CREATE INDEX IF NOT EXISTS idx_upload_session_photos_session ON upload_session_photos(session_id);
-`);
+`;
+
+function toPgPlaceholders(sql: string): string {
+  let i = 0;
+  return sql.replace(/\?/g, () => `$${++i}`);
+}
+
+export let queryAll: <T>(sql: string, args?: unknown[]) => Promise<T[]>;
+export let queryOne: <T>(sql: string, args?: unknown[]) => Promise<T | undefined>;
+export let run: (sql: string, args?: unknown[]) => Promise<void>;
+
+if (usePostgres) {
+  const pool = new pg.Pool({
+    connectionString: process.env.POSTGRES_URL,
+    ssl: { rejectUnauthorized: false },
+  });
+
+  queryAll = async <T>(sql: string, args: unknown[] = []) => {
+    const res = await pool.query(toPgPlaceholders(sql), args);
+    return res.rows as T[];
+  };
+  queryOne = async <T>(sql: string, args: unknown[] = []) => (await queryAll<T>(sql, args))[0];
+  run = async (sql: string, args: unknown[] = []) => {
+    await pool.query(toPgPlaceholders(sql), args);
+  };
+
+  await pool.query(SCHEMA);
+} else {
+  const client = createClient({ url: `file:${DB_PATH}` });
+
+  queryAll = async <T>(sql: string, args: unknown[] = []) => {
+    const rs = await client.execute({ sql, args: args as InValue[] });
+    return rs.rows as unknown as T[];
+  };
+  queryOne = async <T>(sql: string, args: unknown[] = []) => (await queryAll<T>(sql, args))[0];
+  run = async (sql: string, args: unknown[] = []) => {
+    await client.execute({ sql, args: args as InValue[] });
+  };
+
+  await client.executeMultiple(`PRAGMA foreign_keys = ON;\n${SCHEMA}`);
+}
 
 const DEFAULT_SUBJECTS = [
   "Français",
@@ -135,7 +158,7 @@ const DEFAULT_SUBJECTS = [
 ];
 
 const subjectCount = await queryOne<{ count: number }>("SELECT COUNT(*) as count FROM subjects");
-if (subjectCount?.count === 0) {
+if (Number(subjectCount?.count ?? 0) === 0) {
   for (const name of DEFAULT_SUBJECTS) {
     await run("INSERT INTO subjects (id, name, is_custom) VALUES (?, ?, 0)", [crypto.randomUUID(), name]);
   }

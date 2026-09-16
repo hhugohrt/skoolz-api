@@ -38,7 +38,10 @@ onboardingRouter.post("/", requireAuth, async (req, res) => {
 
   await run("DELETE FROM user_subjects WHERE user_id = ?", [userId]);
   for (const subjectId of subjectIds as string[]) {
-    await run("INSERT OR IGNORE INTO user_subjects (user_id, subject_id) VALUES (?, ?)", [userId, subjectId]);
+    await run(
+      "INSERT INTO user_subjects (user_id, subject_id) VALUES (?, ?) ON CONFLICT DO NOTHING",
+      [userId, subjectId],
+    );
   }
 
   const user = (await getUserById(userId))!;
