@@ -84,6 +84,15 @@ const SCHEMA = `
   );
   CREATE INDEX IF NOT EXISTS idx_sections_sheet ON revision_sheet_sections(sheet_id);
 
+  CREATE TABLE IF NOT EXISTS revision_sheet_images (
+    id TEXT PRIMARY KEY,
+    sheet_id TEXT NOT NULL REFERENCES revision_sheets(id) ON DELETE CASCADE,
+    storage_path TEXT NOT NULL,
+    mime_type TEXT NOT NULL,
+    position INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_sheet_images_sheet ON revision_sheet_images(sheet_id);
+
   CREATE TABLE IF NOT EXISTS upload_sessions (
     id TEXT PRIMARY KEY,
     user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,

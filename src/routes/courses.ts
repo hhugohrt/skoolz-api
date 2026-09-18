@@ -9,6 +9,7 @@ import { extractText, UnsupportedFileError } from "../lib/extractText.js";
 import {
   generateRevisionSheet,
   generateRevisionSheetFromImages,
+  generateSheetImages,
   AiNotConfiguredError,
   AiGenerationError,
 } from "../lib/ai.js";
@@ -69,6 +70,15 @@ export interface CoursePhotoRow {
   mime_type: string;
   position: number;
   created_at: string;
+}
+
+// Les fichiers d'image vivent hors base (disque / Blob) : le CASCADE SQL ne les supprime pas.
+async function deleteSheetImageFiles(sheetFilter: string, value: string) {
+  const images = await queryAll<{ storage_path: string }>(
+    `SELECT storage_path FROM revision_sheet_images WHERE sheet_id IN (SELECT id FROM revision_sheets WHERE ${sheetFilter})`,
+    [value],
+  );
+  await Promise.all(images.map((image) => deleteFile(image.storage_path).catch(() => {})));
 }
 
 export async function serializeCourse(row: CourseRow) {
@@ -172,6 +182,7 @@ coursesRouter.delete("/:id", async (req, res) => {
   for (const photo of photos) {
     await deleteFile(photo.storage_path).catch(() => {});
   }
+  await deleteSheetImageFiles("course_id = ?", row.id);
   await run("DELETE FROM courses WHERE id = ?", [row.id]);
   res.status(204).end();
 });
@@ -184,6 +195,8 @@ coursesRouter.post("/:id/generate", async (req, res) => {
   if (!row) {
     return res.status(404).json({ error: "Cours introuvable." });
   }
+
+  const wantsImages = req.body?.format === "image";
 
   await run("UPDATE courses SET status = 'processing', updated_at = ? WHERE id = ?", [
     new Date().toISOString(),
@@ -215,6 +228,7 @@ coursesRouter.post("/:id/generate", async (req, res) => {
 
     // Régénérer (bouton "Réessayer") remplace la fiche précédente au lieu d'en empiler une seconde.
     // Les sections partent avec elle (ON DELETE CASCADE).
+    await deleteSheetImageFiles("course_id = ?", row.id);
     await run("DELETE FROM revision_sheets WHERE course_id = ?", [row.id]);
 
     const sheetId = uuid();
@@ -244,7 +258,29 @@ coursesRouter.post("/:id/generate", async (req, res) => {
       row.id,
     ]);
 
-    res.json({ sheetId });
+    // Fiche visuelle : la fiche texte est déjà enregistrée, donc un échec de génération d'image
+    // ne fait pas perdre le travail — on le signale simplement au client.
+    let imagesError: string | undefined;
+    if (wantsImages) {
+      try {
+        const buffers = await generateSheetImages(sheet);
+        for (const [index, buffer] of buffers.entries()) {
+          const storagePath = await saveFile(buffer, `${uuid()}.png`, "image/png", `sheets/${sheetId}`);
+          await run(
+            "INSERT INTO revision_sheet_images (id, sheet_id, storage_path, mime_type, position) VALUES (?, ?, ?, 'image/png', ?)",
+            [uuid(), sheetId, storagePath, index],
+          );
+        }
+      } catch (imgErr) {
+        imagesError =
+          imgErr instanceof AiNotConfiguredError || imgErr instanceof AiGenerationError
+            ? imgErr.message
+            : "Impossible de générer l'image de la fiche pour le moment.";
+        console.error("Erreur génération image de fiche:", imgErr);
+      }
+    }
+
+    res.json({ sheetId, imagesError });
   } catch (err) {
     const message =
       err instanceof UnsupportedFileError || err instanceof AiNotConfiguredError || err instanceof AiGenerationError
