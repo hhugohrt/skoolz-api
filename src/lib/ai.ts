@@ -358,7 +358,7 @@ async function withCoverageAudit(
       sheet = result.sheet;
       if (result.added === 0) break;
     } catch (err) {
-      console.error("Passe de contrôle ignorée:", (err as Error)?.message);
+      console.error("Passe de contrôle ignorée:", (err as Error)?.message); debugTrace.push(`audit error: ${(err as Error)?.message}`); // TEMP-DEBUG
       break;
     }
   }
@@ -380,7 +380,7 @@ async function withCoverageAudit(
         sheet = applyAdditions(sheet, additions).sheet;
       }
     } catch (err) {
-      console.error("Passe ciblée ignorée:", (err as Error)?.message);
+      console.error("Passe ciblée ignorée:", (err as Error)?.message); debugTrace.push(`targeted error: ${(err as Error)?.message}`); // TEMP-DEBUG
     }
   }
   return sheet;
