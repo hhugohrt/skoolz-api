@@ -64,9 +64,11 @@ Choix des types : "definition" pour un terme défini, "formula" pour une formule
 Termine TOUJOURS par une section "key_point" intitulée "À retenir" qui rappelle les 4 à 8 points les plus importants (en plus de, et non à la place de, tout le reste).`;
 
 const AUDIT_PROMPT = `Tu contrôles une fiche de révision par rapport au cours d'origine, pour vérifier qu'elle n'oublie RIEN.
-Compare minutieusement le cours et la fiche. Repère tout ce qui est ABSENT ou trop peu détaillé dans la fiche : définitions, propriétés, théorèmes, règles, formules, dates, noms propres, chiffres, exemples, méthodes, cas particuliers, exceptions, remarques.
-Réponds UNIQUEMENT avec un objet JSON {"sections":[...]} contenant de NOUVELLES sections (mêmes types et mêmes règles de forme : texte simple, pas de markdown, listes "- ") qui couvrent uniquement ce qui manque, en français. N'invente rien, ne répète pas ce qui figure déjà dans la fiche. Si rien ne manque, réponds {"sections":[]}.
-Types autorisés : "notion" | "definition" | "formula" | "example" | "common_mistake" | "date" | "concept" | "method". Chaque section DOIT avoir un "title" de 2 à 6 mots (jamais vide, jamais une phrase) et un "content". Regroupe les éléments manquants PAR THÈME dans peu de sections (ex : une seule section "Dates de 1789" avec une ligne "- ..." par date, plutôt qu'une section par date). Ne répète JAMAIS une section déjà présente dans la fiche, même reformulée. Vérifie en particulier les noms propres, chiffres, dates et termes techniques un par un.`;
+Procède en deux temps :
+1) Dresse la liste "missing" des éléments PRÉCIS du cours qui sont totalement ABSENTS de la fiche (un élément = une définition, propriété, théorème, règle, formule, date, nom propre, chiffre, exemple, méthode, cas particulier ou exception, cité en quelques mots). Ne liste PAS ce qui est déjà présent, même formulé autrement. Si la fiche est déjà complète, "missing" est vide : c'est le cas le plus fréquent pour une bonne fiche.
+2) Pour ces éléments manquants UNIQUEMENT, écris de nouvelles sections dans "sections" (texte simple, pas de markdown, listes "- ", en français, sans rien inventer). Regroupe-les PAR THÈME dans peu de sections. Chaque section a un "title" de 2 à 6 mots (jamais vide, jamais une phrase) et un "content". Si "missing" est vide, "sections" doit être vide.
+Types autorisés : "notion" | "definition" | "formula" | "example" | "common_mistake" | "date" | "concept" | "method".
+Réponds UNIQUEMENT avec {"missing": string[], "sections": [...]}.`;
 
 const IMAGE_SYSTEM_PROMPT = `${SYSTEM_PROMPT}
 
@@ -192,7 +194,10 @@ async function completeJson<T>(
   }
 }
 
-const ExtraSectionsSchema = z.object({ sections: z.array(SectionSchema) });
+const ExtraSectionsSchema = z.object({
+  missing: z.array(z.string()).default([]),
+  sections: z.array(SectionSchema).default([]),
+});
 
 function parseExtraSections(raw: string | null | undefined) {
   if (!raw) throw new AiGenerationError("Réponse IA invalide (vide).");
@@ -204,7 +209,8 @@ function parseExtraSections(raw: string | null | undefined) {
   }
   const result = ExtraSectionsSchema.safeParse(parsed);
   if (!result.success) throw new AiGenerationError("Réponse IA invalide (schéma inattendu).");
-  return result.data.sections;
+  // Aucune omission déclarée : on ignore d'éventuelles sections superflues.
+  return result.data.missing.length > 0 ? result.data.sections : [];
 }
 
 function serializeSections(sections: GeneratedSheet["sections"]): string {
