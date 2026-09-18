@@ -229,7 +229,7 @@ export async function generateRevisionSheetFromImages(images: ImageInput[]): Pro
 // ---------------------------------------------------------------------------
 
 const IMAGE_MODEL = process.env.OPENAI_IMAGE_MODEL || "gpt-image-1";
-const IMAGE_QUALITY = (process.env.OPENAI_IMAGE_QUALITY || "medium") as "low" | "medium" | "high";
+const IMAGE_QUALITY = (process.env.OPENAI_IMAGE_QUALITY || "high") as "low" | "medium" | "high";
 const MAX_IMAGE_PAGES = 4;
 const CHARS_PER_PAGE = 1_300;
 
