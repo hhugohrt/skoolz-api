@@ -71,7 +71,7 @@ Parcours le cours PHRASE PAR PHRASE et, pour chacune, vérifie que chaque inform
 Procède ensuite en deux temps :
 1) Dresse la liste "missing" des éléments PRÉCIS du cours qui sont totalement ABSENTS de la fiche (cités en quelques mots). Ne liste PAS ce qui est déjà présent, même abrégé ou formulé autrement. Si la fiche est complète, "missing" est vide.
 2) Pour ces éléments manquants UNIQUEMENT, renvoie "additions" : une liste d'objets {"section": string, "lines": string[]}. "section" = le titre EXACT de la section existante de la fiche la plus pertinente pour y ajouter ces lignes ; si aucune ne convient, écris "NOUVELLE : " suivi d'un titre de 2 à 6 mots. "lines" = lignes TÉLÉGRAPHIQUES courtes (mots-clés, sans phrase complète, sans tiret initial, sans rien inventer). Si "missing" est vide, "additions" doit être vide.
-Réponds UNIQUEMENT avec {"missing": string[], "additions": [...]}.`;
+Réponds UNIQUEMENT avec un objet JSON {"missing": string[], "additions": [...]}.`;
 
 const IMAGE_SYSTEM_PROMPT = `${SYSTEM_PROMPT}
 
@@ -296,7 +296,7 @@ function applyAdditions(sheet: GeneratedSheet, additions: Addition[]): { sheet: 
 
 const TARGETED_PROMPT = `Tu complètes une fiche de révision synthétique. On te donne la fiche et des PHRASES du cours dont certains termes (noms propres, chiffres, exemples) n'apparaissent pas dans la fiche.
 Pour chaque phrase, écris les informations qui manquent à la fiche en lignes TÉLÉGRAPHIQUES courtes (mots-clés, sans phrase complète, sans tiret initial, sans rien inventer) et rattache-les à la section existante la plus pertinente (titre EXACT), ou à "NOUVELLE : " suivi d'un titre de 2 à 6 mots si aucune ne convient. Ignore ce qui figure déjà dans la fiche.
-Réponds UNIQUEMENT avec {"additions": [{"section": string, "lines": string[]}]}.`;
+Réponds UNIQUEMENT avec un objet JSON {"additions": [{"section": string, "lines": string[]}]}.`;
 
 function parseForcedAdditions(raw: string | null | undefined): Addition[] {
   if (!raw) throw new AiGenerationError("Réponse IA invalide (vide).");
@@ -451,7 +451,7 @@ export async function generateRevisionSheet(courseText: string): Promise<Generat
   }
 
   const overview = await completeJson(
-    'Tu reçois la liste des sections d\'une fiche de révision. Réponds UNIQUEMENT avec {"title": string (titre court du cours, < 70 caractères), "summary": string (2-3 phrases qui tutoient l\'élève : "Dans ce cours, tu vois...")}.',
+    'Tu reçois la liste des sections d\'une fiche de révision. Réponds UNIQUEMENT avec un objet JSON {"title": string (titre court du cours, < 70 caractères), "summary": string (2-3 phrases qui tutoient l\'élève : "Dans ce cours, tu vois...")}.',
     parts.length > 0 ? merged.map((s) => s.title ?? s.type).join("\n") : "",
     (raw) => {
       const parsed = TitleSummarySchema.safeParse(JSON.parse(raw ?? "{}"));
