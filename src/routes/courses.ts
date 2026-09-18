@@ -8,6 +8,7 @@ import { saveFile, deleteFile } from "../lib/storage.js";
 import { extractText, UnsupportedFileError } from "../lib/extractText.js";
 import {
   generateRevisionSheet,
+  debugTrace, // TEMP-DEBUG
   generateRevisionSheetFromImages,
   AiNotConfiguredError,
   AiGenerationError,
@@ -244,7 +245,7 @@ coursesRouter.post("/:id/generate", async (req, res) => {
       row.id,
     ]);
 
-    res.json({ sheetId });
+    res.json(req.get("x-debug-ai") === "1" ? { sheetId, debug: debugTrace } : { sheetId }); // TEMP-DEBUG
   } catch (err) {
     const message =
       err instanceof UnsupportedFileError || err instanceof AiNotConfiguredError || err instanceof AiGenerationError

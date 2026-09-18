@@ -323,6 +323,8 @@ function sentencesWithTerms(text: string, terms: string[]): string[] {
     .slice(0, 12);
 }
 
+export const debugTrace: string[] = []; // TEMP-DEBUG
+
 const AUDIT_ROUNDS = 2;
 
 // Passes de contrôle : un appel compare le cours à la fiche et rattache ce qui manque ; un second
@@ -337,6 +339,7 @@ async function withCoverageAudit(
   for (let round = 1; round <= AUDIT_ROUNDS; round++) {
     try {
       const hints = sourceText ? absentTerms(sourceText, sheet) : [];
+      debugTrace.push(`round ${round} hints: ${hints.join(" ; ")}`); // TEMP-DEBUG
       const hintText =
         hints.length > 0
           ? `\n\nTERMES DU COURS ABSENTS DE LA FICHE (vérifie chacun : s'il porte une information utile du cours, ajoute-la ; ignore les mots banals) : ${hints.join(" ; ")}`
@@ -351,6 +354,7 @@ async function withCoverageAudit(
         parseAdditions,
       );
       const result = applyAdditions(sheet, additions);
+      debugTrace.push(`round ${round} additions: ${JSON.stringify(additions)} -> added ${result.added}`); // TEMP-DEBUG
       sheet = result.sheet;
       if (result.added === 0) break;
     } catch (err) {
@@ -365,12 +369,14 @@ async function withCoverageAudit(
     try {
       const remaining = absentTerms(sourceText, sheet);
       const sentences = remaining.length > 0 ? sentencesWithTerms(sourceText, remaining) : [];
+      debugTrace.push(`targeted remaining: ${remaining.join(" ; ")} | sentences: ${sentences.length}`); // TEMP-DEBUG
       if (sentences.length > 0) {
         const additions = await completeJson(
           TARGETED_PROMPT,
           `FICHE ACTUELLE :\n${serializeSections(sheet.sections)}\n\nPHRASES DU COURS :\n${sentences.map((t) => `- ${t}`).join("\n")}`,
           parseForcedAdditions,
         );
+        debugTrace.push(`targeted additions: ${JSON.stringify(additions)}`); // TEMP-DEBUG
         sheet = applyAdditions(sheet, additions).sheet;
       }
     } catch (err) {
@@ -418,6 +424,7 @@ export async function generateRevisionSheet(courseText: string): Promise<Generat
   if (!process.env.OPENAI_API_KEY) {
     return generateLocalSheet(courseText);
   }
+  debugTrace.length = 0; // TEMP-DEBUG
   const text = courseText.replace(/\n{3,}/g, "\n\n").trim().slice(0, MAX_TEXT_CHARS);
   const chunks = splitIntoChunks(text);
 
