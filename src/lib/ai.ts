@@ -4,7 +4,10 @@ import { readFile } from "./storage.js";
 
 const MODEL = process.env.OPENAI_MODEL || "gpt-4o-mini";
 const MAX_IMAGES = 12;
-const MAX_SECTIONS = 20;
+const MAX_SECTIONS = 40;
+const CHUNK_CHARS = 18_000;
+const MAX_TEXT_CHARS = 110_000;
+const MAX_OUTPUT_TOKENS = 12_000;
 
 // Un type de section inattendu ne doit pas faire échouer toute la fiche : on le
 // rabat sur "notion" plutôt que de rejeter la réponse (et de facturer un appel pour rien).
@@ -31,16 +34,17 @@ const SYSTEM_PROMPT = `Tu es l'assistant pédagogique de SKOOLZ, une app de rév
 On te donne un cours. Transforme-le en fiche de révision claire, structurée et mémorisable, en français.
 
 Règles de fond :
+- EXHAUSTIVITÉ ABSOLUE : la fiche doit couvrir TOUT le cours, sans exception. Chaque définition, propriété, théorème, règle, loi, formule, date, nom propre, chiffre, exemple, méthode, cas particulier, exception et remarque du cours doit apparaître dans la fiche. Tu peux condenser la FORME (phrases courtes, listes), jamais le FOND : ne supprime, ne fusionne et n'omet aucune information. En cas de doute, garde l'information.
 - Reste fidèle au cours : n'invente aucun fait, chiffre, date ou formule absent du document. Tu peux reformuler et clarifier, pas ajouter.
-- Sois synthétique : phrases courtes, idées séparées, pas de remplissage. Vise une fiche qu'on relit en 5 minutes.
-- Respecte l'ordre logique du cours. Regroupe les idées proches dans une même section.
+- Respecte l'ordre logique du cours. Une section = UNE notion ou idée cohérente ; regroupe les phrases qui parlent du même sujet.
+- Fais autant de sections que nécessaire pour tout couvrir (souvent 8 à 25 pour un cours riche, jusqu'à 40).
 - Adapte le niveau de langage au niveau du cours.
 
 Règles de forme :
 - Texte simple uniquement : PAS de markdown (pas de **, #, tableaux). Pour une liste, une ligne par élément commençant par "- ". Sépare les paragraphes par une ligne vide.
 - Écris les formules de façon lisible en texte brut (ex : "E = m × c²", "x₁ + x₂ = -b/a").
 - "title" : titre court (< 70 caractères). "summary" : 2-3 phrases qui tutoient l'élève ("Dans ce cours, tu vois...").
-- Entre 3 et 8 sections selon la richesse du cours. Une section = UNE idée complète : regroupe les phrases qui parlent du même sujet (plusieurs lignes "- ..." ou un court paragraphe), ne fais JAMAIS une section par phrase.
+- Ne fais JAMAIS une section par phrase : plusieurs lignes "- ..." ou un court paragraphe par section.
 - Chaque section a un "title" court et parlant (ex : "Où ça se passe", "Équation bilan"), sauf éventuellement une définition très courte.
 
 Réponds UNIQUEMENT avec un objet JSON respectant exactement ce schéma :
@@ -57,7 +61,12 @@ Réponds UNIQUEMENT avec un objet JSON respectant exactement ce schéma :
 }
 
 Choix des types : "definition" pour un terme défini, "formula" pour une formule/loi, "method" pour une démarche pas à pas, "example" pour un exemple traité, "date" pour une chronologie, "concept" pour une idée abstraite, "notion" par défaut, "common_mistake" pour un piège classique à éviter. N'utilise que les types pertinents pour ce cours (pas de formule dans un cours d'histoire).
-Termine TOUJOURS par une section "key_point" intitulée "À retenir" qui liste les 3 à 6 points essentiels.`;
+Termine TOUJOURS par une section "key_point" intitulée "À retenir" qui rappelle les 4 à 8 points les plus importants (en plus de, et non à la place de, tout le reste).`;
+
+const AUDIT_PROMPT = `Tu contrôles une fiche de révision par rapport au cours d'origine, pour vérifier qu'elle n'oublie RIEN.
+Compare minutieusement le cours et la fiche. Repère tout ce qui est ABSENT ou trop peu détaillé dans la fiche : définitions, propriétés, théorèmes, règles, formules, dates, noms propres, chiffres, exemples, méthodes, cas particuliers, exceptions, remarques.
+Réponds UNIQUEMENT avec un objet JSON {"sections":[...]} contenant de NOUVELLES sections (mêmes types et mêmes règles de forme : texte simple, pas de markdown, listes "- ") qui couvrent uniquement ce qui manque, en français. N'invente rien, ne répète pas ce qui figure déjà dans la fiche. Si rien ne manque, réponds {"sections":[]}.
+Types autorisés : "notion" | "definition" | "formula" | "example" | "common_mistake" | "date" | "concept" | "method". Chaque section a un "title" court et un "content".`;
 
 const IMAGE_SYSTEM_PROMPT = `${SYSTEM_PROMPT}
 
@@ -149,25 +158,32 @@ function toFriendlyError(err: unknown): Error {
   return err instanceof Error ? err : new Error(String(err));
 }
 
+type UserContent = string | OpenAI.Chat.ChatCompletionContentPart[];
+
 // Un JSON malformé est rare mais arrive : on retente une fois avant d'abandonner.
-async function completeSheet(
-  messages: OpenAI.Chat.ChatCompletionMessageParam[],
-): Promise<GeneratedSheet> {
+async function completeJson<T>(
+  system: string,
+  user: UserContent,
+  parse: (raw: string | null | undefined) => T,
+): Promise<T> {
   const openai = getClient();
   for (let attempt = 1; ; attempt++) {
     try {
       const completion = await openai.chat.completions.create({
         model: MODEL,
         response_format: { type: "json_object" },
-        temperature: 0.3,
-        max_tokens: 4_000,
-        messages,
+        temperature: 0.2,
+        max_tokens: MAX_OUTPUT_TOKENS,
+        messages: [
+          { role: "system", content: system },
+          { role: "user", content: user },
+        ],
       });
       const choice = completion.choices[0];
       if (choice?.finish_reason === "length") {
-        throw new AiGenerationError("Le cours est trop long pour être résumé en une seule fiche. Découpe-le par chapitre.");
+        throw new AiGenerationError("Ce cours est trop dense pour une seule fiche. Découpe-le par chapitre.");
       }
-      return parseSheetResponse(choice?.message?.content);
+      return parse(choice?.message?.content);
     } catch (err) {
       const retryable = err instanceof AiGenerationError && /invalide/.test(err.message);
       if (retryable && attempt < 2) continue;
@@ -176,16 +192,118 @@ async function completeSheet(
   }
 }
 
+const ExtraSectionsSchema = z.object({ sections: z.array(SectionSchema) });
+
+function parseExtraSections(raw: string | null | undefined) {
+  if (!raw) throw new AiGenerationError("Réponse IA invalide (vide).");
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new AiGenerationError("Réponse IA invalide (JSON malformé).");
+  }
+  const result = ExtraSectionsSchema.safeParse(parsed);
+  if (!result.success) throw new AiGenerationError("Réponse IA invalide (schéma inattendu).");
+  return result.data.sections;
+}
+
+function serializeSections(sections: GeneratedSheet["sections"]): string {
+  return sections.map((s) => `[${s.type}] ${s.title ?? ""}\n${s.content}`).join("\n\n");
+}
+
+// Passe de contrôle : un second appel compare le cours à la fiche et ajoute ce qui manque.
+// Un échec ici ne doit jamais faire perdre la fiche déjà générée.
+async function withCoverageAudit(source: OpenAI.Chat.ChatCompletionContentPart[], draft: GeneratedSheet): Promise<GeneratedSheet> {
+  try {
+    const extra = await completeJson(
+      AUDIT_PROMPT,
+      [
+        { type: "text", text: "COURS D'ORIGINE :" },
+        ...source,
+        { type: "text", text: `FICHE ACTUELLE :\n${serializeSections(draft.sections)}` },
+      ],
+      parseExtraSections,
+    );
+    const missing = extra.filter((s) => s.type !== "key_point");
+    if (missing.length === 0) return draft;
+    const body = draft.sections.filter((s) => s.type !== "key_point");
+    const keys = draft.sections.filter((s) => s.type === "key_point");
+    return { ...draft, sections: [...body, ...missing, ...keys].slice(0, MAX_SECTIONS) };
+  } catch (err) {
+    console.error("Passe de contrôle ignorée:", (err as Error)?.message);
+    return draft;
+  }
+}
+
+async function buildSheet(systemPrompt: string, source: OpenAI.Chat.ChatCompletionContentPart[]): Promise<GeneratedSheet> {
+  const draft = await completeJson(systemPrompt, source, parseSheetResponse);
+  return withCoverageAudit(source, draft);
+}
+
+// Coupe un long cours aux frontières de paragraphes pour que rien ne soit tronqué.
+function splitIntoChunks(text: string): string[] {
+  const chunks: string[] = [];
+  let current = "";
+  const push = () => {
+    if (current.trim()) chunks.push(current.trim());
+    current = "";
+  };
+  for (const paragraph of text.split(/\n{2,}/)) {
+    if (current && current.length + paragraph.length + 2 > CHUNK_CHARS) push();
+    if (paragraph.length > CHUNK_CHARS) {
+      for (let i = 0; i < paragraph.length; i += CHUNK_CHARS) {
+        current = paragraph.slice(i, i + CHUNK_CHARS);
+        push();
+      }
+      continue;
+    }
+    current += (current ? "\n\n" : "") + paragraph;
+  }
+  push();
+  return chunks;
+}
+
+const TitleSummarySchema = z.object({ title: z.string().trim().min(1), summary: z.string().trim() });
+
 export async function generateRevisionSheet(courseText: string): Promise<GeneratedSheet> {
   if (!process.env.OPENAI_API_KEY) {
     return generateLocalSheet(courseText);
   }
-  const truncated = courseText.replace(/\n{3,}/g, "\n\n").trim().slice(0, 40_000);
+  const text = courseText.replace(/\n{3,}/g, "\n\n").trim().slice(0, MAX_TEXT_CHARS);
+  const chunks = splitIntoChunks(text);
 
-  return completeSheet([
-    { role: "system", content: SYSTEM_PROMPT },
-    { role: "user", content: truncated },
-  ]);
+  if (chunks.length <= 1) {
+    return buildSheet(SYSTEM_PROMPT, [{ type: "text", text }]);
+  }
+
+  // Long cours : chaque partie est traitée intégralement (fiche + contrôle), puis fusionnée.
+  const parts = await Promise.all(
+    chunks.map((chunk, index) =>
+      buildSheet(
+        `${SYSTEM_PROMPT}\n\nCe texte est la partie ${index + 1}/${chunks.length} d'un cours plus long : traite UNIQUEMENT cette partie, de façon exhaustive.`,
+        [{ type: "text", text: chunk }],
+      ),
+    ),
+  );
+
+  const body = parts.flatMap((p) => p.sections.filter((s) => s.type !== "key_point"));
+  const keyPoints = parts.flatMap((p) => p.sections.filter((s) => s.type === "key_point"));
+  const merged: GeneratedSheet["sections"] = [...body];
+  if (keyPoints.length > 0) {
+    merged.push({ type: "key_point", title: "À retenir", content: keyPoints.map((k) => k.content).join("\n") });
+  }
+
+  const overview = await completeJson(
+    'Tu reçois la liste des sections d\'une fiche de révision. Réponds UNIQUEMENT avec {"title": string (titre court du cours, < 70 caractères), "summary": string (2-3 phrases qui tutoient l\'élève : "Dans ce cours, tu vois...")}.',
+    parts.length > 0 ? merged.map((s) => s.title ?? s.type).join("\n") : "",
+    (raw) => {
+      const parsed = TitleSummarySchema.safeParse(JSON.parse(raw ?? "{}"));
+      if (!parsed.success) throw new AiGenerationError("Réponse IA invalide (titre).");
+      return parsed.data;
+    },
+  ).catch(() => ({ title: parts[0].title, summary: parts[0].summary }));
+
+  return { title: overview.title, summary: overview.summary, sections: merged.slice(0, MAX_SECTIONS) };
 }
 
 export interface ImageInput {
@@ -215,11 +333,8 @@ export async function generateRevisionSheetFromImages(images: ImageInput[]): Pro
 
   const introText =
     pages.length > 1
-      ? `Voici ${pages.length} photos, les pages successives d'un même cours. Génère une seule fiche de révision.`
-      : "Voici la photo d'un cours. Génère la fiche de révision.";
+      ? `Voici ${pages.length} photos, les pages successives d'un même cours. Génère une seule fiche de révision, exhaustive.`
+      : "Voici la photo d'un cours. Génère la fiche de révision, exhaustive.";
 
-  return completeSheet([
-    { role: "system", content: IMAGE_SYSTEM_PROMPT },
-    { role: "user", content: [{ type: "text", text: introText }, ...imageBlocks] },
-  ]);
+  return buildSheet(IMAGE_SYSTEM_PROMPT, [{ type: "text", text: introText }, ...imageBlocks]);
 }
