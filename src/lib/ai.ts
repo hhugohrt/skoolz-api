@@ -228,6 +228,32 @@ function normalize(value: string): string {
   return value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 }
 
+// Chiffres comparés sans espaces de milliers ("17 000" = "17000").
+const compactDigits = (value: string) => value.replace(/(\d)[\s\u00a0.](?=\d{3}(?!\d))/g, "$1");
+
+const STOP_TERMS = new Set(["dans", "elle", "cette", "cela", "ainsi", "pour", "avec", "comme", "selon", "mais", "donc", "alors", "puis", "entre", "apres", "avant", "lors", "depuis", "chaque", "toute", "tous", "leur", "leurs", "sont", "vocabulaire"]);
+
+// Termes du cours qu'une bonne fiche doit reprendre : noms propres (majuscule hors début de phrase),
+// énumérations introduites par « comme / notamment », années et chiffres. On ne garde que ceux
+// qui manquent dans la fiche : ils servent d'indices au contrôle de couverture.
+function absentTerms(sourceText: string, sheet: GeneratedSheet): string[] {
+  const haystack = compactDigits(normalize(sheet.title + " " + sheet.summary + " " + serializeSections(sheet.sections)));
+  const terms = new Set<string>();
+
+  for (const m of sourceText.matchAll(/(?<![.!?:]\s)(?<!^)(?<!\n)\b\p{Lu}[\p{L}'’-]{3,}/gu)) {
+    const before = sourceText.slice(Math.max(0, m.index - 3), m.index);
+    if (/[.!?:]\s*$/.test(before) || /\n\s*$/.test(before)) continue;
+    terms.add(m[0]);
+  }
+  for (const m of sourceText.matchAll(/(?:comme|notamment|par exemple|tels? que|telles? que)\s+(?:la |le |les |l')?([\p{L}'’-]{4,})/giu)) terms.add(m[1]);
+  for (const m of compactDigits(sourceText).matchAll(/\b\d{2,}(?:[.,]\d+)?\s?%?/g)) terms.add(m[0].trim());
+
+  return [...terms]
+    .filter((t) => !STOP_TERMS.has(normalize(t)))
+    .filter((t) => !haystack.includes(compactDigits(normalize(t))))
+    .slice(0, 40);
+}
+
 const cleanLine = (line: string) => line.trim().replace(/^[-•*]\s*/, "");
 
 // Rattache chaque ligne manquante à la section du bon thème (la fiche reste synthétique et
@@ -270,16 +296,25 @@ const AUDIT_ROUNDS = 2;
 // Passes de contrôle : un appel compare le cours à la fiche et rattache ce qui manque ; un second
 // tour rattrape ce que le premier a laissé passer. Un échec ici ne doit jamais faire perdre la
 // fiche déjà générée.
-async function withCoverageAudit(source: OpenAI.Chat.ChatCompletionContentPart[], draft: GeneratedSheet): Promise<GeneratedSheet> {
+async function withCoverageAudit(
+  source: OpenAI.Chat.ChatCompletionContentPart[],
+  draft: GeneratedSheet,
+  sourceText?: string,
+): Promise<GeneratedSheet> {
   let sheet = draft;
   for (let round = 1; round <= AUDIT_ROUNDS; round++) {
     try {
+      const hints = sourceText ? absentTerms(sourceText, sheet) : [];
+      const hintText =
+        hints.length > 0
+          ? `\n\nTERMES DU COURS ABSENTS DE LA FICHE (vérifie chacun : s'il porte une information utile du cours, ajoute-la ; ignore les mots banals) : ${hints.join(" ; ")}`
+          : "";
       const additions = await completeJson(
         AUDIT_PROMPT,
         [
           { type: "text", text: "COURS D'ORIGINE :" },
           ...source,
-          { type: "text", text: `FICHE ACTUELLE :\n${serializeSections(sheet.sections)}` },
+          { type: "text", text: `FICHE ACTUELLE :\n${serializeSections(sheet.sections)}${hintText}` },
         ],
         parseAdditions,
       );
@@ -294,9 +329,13 @@ async function withCoverageAudit(source: OpenAI.Chat.ChatCompletionContentPart[]
   return sheet;
 }
 
-async function buildSheet(systemPrompt: string, source: OpenAI.Chat.ChatCompletionContentPart[]): Promise<GeneratedSheet> {
+async function buildSheet(
+  systemPrompt: string,
+  source: OpenAI.Chat.ChatCompletionContentPart[],
+  sourceText?: string,
+): Promise<GeneratedSheet> {
   const draft = await completeJson(systemPrompt, source, parseSheetResponse);
-  return withCoverageAudit(source, draft);
+  return withCoverageAudit(source, draft, sourceText);
 }
 
 // Coupe un long cours aux frontières de paragraphes pour que rien ne soit tronqué.
@@ -332,7 +371,7 @@ export async function generateRevisionSheet(courseText: string): Promise<Generat
   const chunks = splitIntoChunks(text);
 
   if (chunks.length <= 1) {
-    return buildSheet(SYSTEM_PROMPT, [{ type: "text", text }]);
+    return buildSheet(SYSTEM_PROMPT, [{ type: "text", text }], text);
   }
 
   // Long cours : chaque partie est traitée intégralement (fiche + contrôle), puis fusionnée.
@@ -341,6 +380,7 @@ export async function generateRevisionSheet(courseText: string): Promise<Generat
       buildSheet(
         `${SYSTEM_PROMPT}\n\nCe texte est la partie ${index + 1}/${chunks.length} d'un cours plus long : traite UNIQUEMENT cette partie, de façon exhaustive.`,
         [{ type: "text", text: chunk }],
+        chunk,
       ),
     ),
   );
