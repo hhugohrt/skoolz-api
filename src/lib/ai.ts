@@ -64,7 +64,8 @@ Choix des types : "definition" pour un terme défini, "formula" pour une formule
 Termine TOUJOURS par une section "key_point" intitulée "À retenir" qui rappelle les 4 à 8 points les plus importants (en plus de, et non à la place de, tout le reste).`;
 
 const AUDIT_PROMPT = `Tu contrôles une fiche de révision par rapport au cours d'origine, pour vérifier qu'elle n'oublie RIEN.
-Procède en deux temps :
+Parcours le cours PHRASE PAR PHRASE et, pour chacune, vérifie que chaque information qu'elle contient figure dans la fiche : y compris les exemples, les noms entre parenthèses ou après « comme », les noms d'impôts, de lieux, de personnes, d'œuvres et les chiffres.
+Procède ensuite en deux temps :
 1) Dresse la liste "missing" des éléments PRÉCIS du cours qui sont totalement ABSENTS de la fiche (un élément = une définition, propriété, théorème, règle, formule, date, nom propre, chiffre, exemple, méthode, cas particulier ou exception, cité en quelques mots). Ne liste PAS ce qui est déjà présent, même formulé autrement. Si la fiche est déjà complète, "missing" est vide : c'est le cas le plus fréquent pour une bonne fiche.
 2) Pour ces éléments manquants UNIQUEMENT, écris de nouvelles sections dans "sections" (texte simple, pas de markdown, listes "- ", en français, sans rien inventer). Regroupe-les PAR THÈME dans peu de sections. Chaque section a un "title" de 2 à 6 mots (jamais vide, jamais une phrase) et un "content". Si "missing" est vide, "sections" doit être vide.
 Types autorisés : "notion" | "definition" | "formula" | "example" | "common_mistake" | "date" | "concept" | "method".
