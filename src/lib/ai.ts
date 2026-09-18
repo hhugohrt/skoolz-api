@@ -231,7 +231,7 @@ function normalize(value: string): string {
 // Chiffres comparés sans espaces de milliers ("17 000" = "17000").
 const compactDigits = (value: string) => value.replace(/(\d)[\s\u00a0.](?=\d{3}(?!\d))/g, "$1");
 
-const STOP_TERMS = new Set(["dans", "elle", "cette", "cela", "ainsi", "pour", "avec", "comme", "selon", "mais", "donc", "alors", "puis", "entre", "apres", "avant", "lors", "depuis", "chaque", "toute", "tous", "leur", "leurs", "sont", "vocabulaire"]);
+const STOP_TERMS = new Set(["dans", "elle", "cette", "cela", "ainsi", "pour", "avec", "comme", "selon", "mais", "donc", "alors", "puis", "entre", "apres", "avant", "lors", "depuis", "chaque", "toute", "tous", "leur", "leurs", "sont", "vocabulaire", "france", "paris", "parisiens", "francais", "francaise", "francaises"]);
 
 // Termes du cours qu'une bonne fiche doit reprendre : noms propres (majuscule hors début de phrase),
 // énumérations introduites par « comme / notamment », années et chiffres. On ne garde que ceux
@@ -261,7 +261,7 @@ function absentTerms(sourceText: string, sheet: GeneratedSheet): string[] {
 function alreadyCovered(line: string, knownNormalized: string): boolean {
   const words = normalize(line).split(" ").filter((w) => w.length >= 4);
   if (words.length === 0) return true;
-  return words.filter((w) => knownNormalized.includes(w)).length / words.length >= 0.7;
+  return words.filter((w) => knownNormalized.includes(w)).length / words.length >= 0.6;
 }
 
 const cleanLine = (line: string) => line.trim().replace(/^[-•*]\s*/, "");
@@ -303,37 +303,6 @@ function applyAdditions(sheet: GeneratedSheet, additions: Addition[]): { sheet: 
   return { sheet: { ...sheet, sections: sections.slice(0, MAX_SECTIONS) }, added };
 }
 
-const TARGETED_PROMPT = `Tu complètes une fiche de révision synthétique. On te donne la fiche et des PHRASES du cours dont certains termes (noms propres, chiffres, exemples) n'apparaissent pas dans la fiche.
-Pour chaque phrase, écris les informations qui manquent à la fiche en lignes TÉLÉGRAPHIQUES courtes (mots-clés, sans phrase complète, sans tiret initial, sans rien inventer) et rattache-les à la section existante la plus pertinente (titre EXACT), ou à "NOUVELLE : " suivi d'un titre de 2 à 6 mots si aucune ne convient. Ignore ce qui figure déjà dans la fiche, même abrégé, et n'écris jamais de ligne creuse du type « X : contexte de la Révolution ».
-Réponds UNIQUEMENT avec un objet JSON {"additions": [{"section": string, "lines": string[]}]}.`;
-
-function parseForcedAdditions(raw: string | null | undefined): Addition[] {
-  if (!raw) throw new AiGenerationError("Réponse IA invalide (vide).");
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    throw new AiGenerationError("Réponse IA invalide (JSON malformé).");
-  }
-  const result = AdditionsSchema.safeParse(parsed);
-  if (!result.success) throw new AiGenerationError("Réponse IA invalide (schéma inattendu).");
-  return result.data.additions;
-}
-
-function sentencesWithTerms(text: string, terms: string[]): string[] {
-  const wanted = terms.map((t) => compactDigits(normalize(t)));
-  return text
-    .split(/(?<=[.!?])\s+|\n+/)
-    .map((sentence) => sentence.trim())
-    .filter((sentence) => {
-      const norm = compactDigits(normalize(sentence));
-      return sentence.length > 8 && wanted.some((t) => norm.includes(t));
-    })
-    .slice(0, 12);
-}
-
-export const debugTrace: string[] = []; // TEMP-DEBUG
-
 const AUDIT_ROUNDS = 2;
 
 // Passes de contrôle : un appel compare le cours à la fiche et rattache ce qui manque ; un second
@@ -345,12 +314,13 @@ async function withCoverageAudit(
   sourceText?: string,
 ): Promise<GeneratedSheet> {
   let sheet = draft;
+  const attempted = new Set<string>();
   for (let round = 1; round <= AUDIT_ROUNDS; round++) {
     try {
-      const hints = sourceText ? absentTerms(sourceText, sheet) : [];
+      const hints = sourceText ? absentTerms(sourceText, sheet).filter((t) => !attempted.has(t)) : [];
+      hints.forEach((t) => attempted.add(t));
       // Sans indice déterministe, un 2e tour ne fait que réécrire ce qui existe déjà.
       if (round > 1 && hints.length === 0) break;
-      debugTrace.push(`round ${round} hints: ${hints.join(" ; ")}`); // TEMP-DEBUG
       const hintText =
         hints.length > 0
           ? `\n\nTERMES DU COURS ABSENTS DE LA FICHE (vérifie chacun : s'il porte une information utile du cours, ajoute-la ; ignore les mots banals) : ${hints.join(" ; ")}`
@@ -365,35 +335,14 @@ async function withCoverageAudit(
         parseAdditions,
       );
       const result = applyAdditions(sheet, additions);
-      debugTrace.push(`round ${round} additions: ${JSON.stringify(additions)} -> added ${result.added}`); // TEMP-DEBUG
       sheet = result.sheet;
       if (result.added === 0) break;
     } catch (err) {
-      console.error("Passe de contrôle ignorée:", (err as Error)?.message); debugTrace.push(`audit error: ${(err as Error)?.message}`); // TEMP-DEBUG
+      console.error("Passe de contrôle ignorée:", (err as Error)?.message);
       break;
     }
   }
 
-  // Dernier filet : pour les termes du cours encore absents, le modèle reçoit la phrase exacte
-  // et doit la condenser dans la bonne section (il ne peut plus « juger » que c'est couvert).
-  if (sourceText) {
-    try {
-      const remaining = absentTerms(sourceText, sheet);
-      const sentences = remaining.length > 0 ? sentencesWithTerms(sourceText, remaining) : [];
-      debugTrace.push(`targeted remaining: ${remaining.join(" ; ")} | sentences: ${sentences.length}`); // TEMP-DEBUG
-      if (sentences.length > 0) {
-        const additions = await completeJson(
-          TARGETED_PROMPT,
-          `FICHE ACTUELLE :\n${serializeSections(sheet.sections)}\n\nPHRASES DU COURS :\n${sentences.map((t) => `- ${t}`).join("\n")}`,
-          parseForcedAdditions,
-        );
-        debugTrace.push(`targeted additions: ${JSON.stringify(additions)}`); // TEMP-DEBUG
-        sheet = applyAdditions(sheet, additions).sheet;
-      }
-    } catch (err) {
-      console.error("Passe ciblée ignorée:", (err as Error)?.message); debugTrace.push(`targeted error: ${(err as Error)?.message}`); // TEMP-DEBUG
-    }
-  }
   return sheet;
 }
 
@@ -435,7 +384,6 @@ export async function generateRevisionSheet(courseText: string): Promise<Generat
   if (!process.env.OPENAI_API_KEY) {
     return generateLocalSheet(courseText);
   }
-  debugTrace.length = 0; // TEMP-DEBUG
   const text = courseText.replace(/\n{3,}/g, "\n\n").trim().slice(0, MAX_TEXT_CHARS);
   const chunks = splitIntoChunks(text);
 
