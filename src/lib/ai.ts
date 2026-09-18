@@ -66,7 +66,7 @@ Termine TOUJOURS par une section "key_point" intitulée "À retenir" qui rappell
 const AUDIT_PROMPT = `Tu contrôles une fiche de révision par rapport au cours d'origine, pour vérifier qu'elle n'oublie RIEN.
 Compare minutieusement le cours et la fiche. Repère tout ce qui est ABSENT ou trop peu détaillé dans la fiche : définitions, propriétés, théorèmes, règles, formules, dates, noms propres, chiffres, exemples, méthodes, cas particuliers, exceptions, remarques.
 Réponds UNIQUEMENT avec un objet JSON {"sections":[...]} contenant de NOUVELLES sections (mêmes types et mêmes règles de forme : texte simple, pas de markdown, listes "- ") qui couvrent uniquement ce qui manque, en français. N'invente rien, ne répète pas ce qui figure déjà dans la fiche. Si rien ne manque, réponds {"sections":[]}.
-Types autorisés : "notion" | "definition" | "formula" | "example" | "common_mistake" | "date" | "concept" | "method". Chaque section a un "title" court et un "content".`;
+Types autorisés : "notion" | "definition" | "formula" | "example" | "common_mistake" | "date" | "concept" | "method". Chaque section DOIT avoir un "title" court et parlant (jamais vide) et un "content". Vérifie en particulier les noms propres, chiffres, dates et termes techniques un par un.`;
 
 const IMAGE_SYSTEM_PROMPT = `${SYSTEM_PROMPT}
 
@@ -211,28 +211,45 @@ function serializeSections(sections: GeneratedSheet["sections"]): string {
   return sections.map((s) => `[${s.type}] ${s.title ?? ""}\n${s.content}`).join("\n\n");
 }
 
-// Passe de contrôle : un second appel compare le cours à la fiche et ajoute ce qui manque.
-// Un échec ici ne doit jamais faire perdre la fiche déjà générée.
+// Titre de repli si le modèle n'en a pas donné : début de la première ligne.
+function fallbackTitle(content: string): string {
+  const first = content.split("\n")[0].replace(/^[-•*]\s+/, "").trim();
+  const cut = first.split(/[:;.]/)[0].trim();
+  const base = cut.length >= 4 ? cut : first;
+  return base.length > 48 ? `${base.slice(0, 48).replace(/\s+\S*$/, "")}…` : base;
+}
+
+const AUDIT_ROUNDS = 2;
+
+// Passes de contrôle : un appel compare le cours à la fiche et ajoute ce qui manque ; un second
+// tour rattrape ce que le premier a laissé passer. Un échec ici ne doit jamais faire perdre la
+// fiche déjà générée.
 async function withCoverageAudit(source: OpenAI.Chat.ChatCompletionContentPart[], draft: GeneratedSheet): Promise<GeneratedSheet> {
-  try {
-    const extra = await completeJson(
-      AUDIT_PROMPT,
-      [
-        { type: "text", text: "COURS D'ORIGINE :" },
-        ...source,
-        { type: "text", text: `FICHE ACTUELLE :\n${serializeSections(draft.sections)}` },
-      ],
-      parseExtraSections,
-    );
-    const missing = extra.filter((s) => s.type !== "key_point");
-    if (missing.length === 0) return draft;
-    const body = draft.sections.filter((s) => s.type !== "key_point");
-    const keys = draft.sections.filter((s) => s.type === "key_point");
-    return { ...draft, sections: [...body, ...missing, ...keys].slice(0, MAX_SECTIONS) };
-  } catch (err) {
-    console.error("Passe de contrôle ignorée:", (err as Error)?.message);
-    return draft;
+  let sheet = draft;
+  for (let round = 1; round <= AUDIT_ROUNDS; round++) {
+    try {
+      const extra = await completeJson(
+        AUDIT_PROMPT,
+        [
+          { type: "text", text: "COURS D'ORIGINE :" },
+          ...source,
+          { type: "text", text: `FICHE ACTUELLE :\n${serializeSections(sheet.sections)}` },
+        ],
+        parseExtraSections,
+      );
+      const missing = extra
+        .filter((s) => s.type !== "key_point")
+        .map((s) => ({ ...s, title: s.title ?? fallbackTitle(s.content) }));
+      if (missing.length === 0) break;
+      const body = sheet.sections.filter((s) => s.type !== "key_point");
+      const keys = sheet.sections.filter((s) => s.type === "key_point");
+      sheet = { ...sheet, sections: [...body, ...missing, ...keys].slice(0, MAX_SECTIONS) };
+    } catch (err) {
+      console.error("Passe de contrôle ignorée:", (err as Error)?.message);
+      break;
+    }
   }
+  return sheet;
 }
 
 async function buildSheet(systemPrompt: string, source: OpenAI.Chat.ChatCompletionContentPart[]): Promise<GeneratedSheet> {
