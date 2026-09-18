@@ -36,8 +36,9 @@ On te donne un cours. Transforme-le en fiche de révision claire, structurée et
 Règles de fond :
 - EXHAUSTIVITÉ ABSOLUE : la fiche doit couvrir TOUT le cours, sans exception. Chaque définition, propriété, théorème, règle, loi, formule, date, nom propre, chiffre, exemple, méthode, cas particulier, exception et remarque du cours doit apparaître dans la fiche. Tu peux condenser la FORME (phrases courtes, listes), jamais le FOND : ne supprime, ne fusionne et n'omet aucune information. En cas de doute, garde l'information.
 - Reste fidèle au cours : n'invente aucun fait, chiffre, date ou formule absent du document. Tu peux reformuler et clarifier, pas ajouter.
-- Respecte l'ordre logique du cours. Une section = UNE notion ou idée cohérente ; regroupe les phrases qui parlent du même sujet.
-- Fais autant de sections que nécessaire pour tout couvrir (souvent 8 à 25 pour un cours riche, jusqu'à 40).
+- Respecte l'ordre logique du cours. Découpe finement : une section = UNE notion, UN événement, UNE définition, UNE formule ou UNE méthode, avec toutes ses précisions (dates, chiffres, noms) dans la section.
+- Vise 15 à 30 sections pour un cours riche (jamais moins de 8 sauf cours très court), jusqu'à 40 si nécessaire pour tout couvrir.
+- Chaque "title" fait 2 à 6 mots, jamais une phrase (ex : "Serment du Jeu de paume", "Loi des suspects").
 - Adapte le niveau de langage au niveau du cours.
 
 Règles de forme :
@@ -45,7 +46,6 @@ Règles de forme :
 - Écris les formules de façon lisible en texte brut (ex : "E = m × c²", "x₁ + x₂ = -b/a").
 - "title" : titre court (< 70 caractères). "summary" : 2-3 phrases qui tutoient l'élève ("Dans ce cours, tu vois...").
 - Ne fais JAMAIS une section par phrase : plusieurs lignes "- ..." ou un court paragraphe par section.
-- Chaque section a un "title" court et parlant (ex : "Où ça se passe", "Équation bilan"), sauf éventuellement une définition très courte.
 
 Réponds UNIQUEMENT avec un objet JSON respectant exactement ce schéma :
 {
@@ -66,7 +66,7 @@ Termine TOUJOURS par une section "key_point" intitulée "À retenir" qui rappell
 const AUDIT_PROMPT = `Tu contrôles une fiche de révision par rapport au cours d'origine, pour vérifier qu'elle n'oublie RIEN.
 Compare minutieusement le cours et la fiche. Repère tout ce qui est ABSENT ou trop peu détaillé dans la fiche : définitions, propriétés, théorèmes, règles, formules, dates, noms propres, chiffres, exemples, méthodes, cas particuliers, exceptions, remarques.
 Réponds UNIQUEMENT avec un objet JSON {"sections":[...]} contenant de NOUVELLES sections (mêmes types et mêmes règles de forme : texte simple, pas de markdown, listes "- ") qui couvrent uniquement ce qui manque, en français. N'invente rien, ne répète pas ce qui figure déjà dans la fiche. Si rien ne manque, réponds {"sections":[]}.
-Types autorisés : "notion" | "definition" | "formula" | "example" | "common_mistake" | "date" | "concept" | "method". Chaque section DOIT avoir un "title" court et parlant (jamais vide) et un "content". Vérifie en particulier les noms propres, chiffres, dates et termes techniques un par un.`;
+Types autorisés : "notion" | "definition" | "formula" | "example" | "common_mistake" | "date" | "concept" | "method". Chaque section DOIT avoir un "title" de 2 à 6 mots (jamais vide, jamais une phrase) et un "content". Regroupe les éléments manquants PAR THÈME dans peu de sections (ex : une seule section "Dates de 1789" avec une ligne "- ..." par date, plutôt qu'une section par date). Ne répète JAMAIS une section déjà présente dans la fiche, même reformulée. Vérifie en particulier les noms propres, chiffres, dates et termes techniques un par un.`;
 
 const IMAGE_SYSTEM_PROMPT = `${SYSTEM_PROMPT}
 
@@ -211,12 +211,32 @@ function serializeSections(sections: GeneratedSheet["sections"]): string {
   return sections.map((s) => `[${s.type}] ${s.title ?? ""}\n${s.content}`).join("\n\n");
 }
 
-// Titre de repli si le modèle n'en a pas donné : début de la première ligne.
+// Titre de repli si le modèle n'en a pas donné : les premiers mots de la première ligne.
 function fallbackTitle(content: string): string {
   const first = content.split("\n")[0].replace(/^[-•*]\s+/, "").trim();
-  const cut = first.split(/[:;.]/)[0].trim();
-  const base = cut.length >= 4 ? cut : first;
-  return base.length > 48 ? `${base.slice(0, 48).replace(/\s+\S*$/, "")}…` : base;
+  const words = first.split(/\s+/).slice(0, 6).join(" ").replace(/[:;,.\s]+$/, "");
+  return words || "Complément";
+}
+
+function normalize(value: string): string {
+  return value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+// Écarte les sections déjà présentes (même titre, ou même début de contenu), y compris
+// celles ajoutées par un tour précédent : le contrôle a tendance à se répéter.
+function withoutDuplicates(candidates: GeneratedSheet["sections"], existing: GeneratedSheet["sections"]) {
+  const titles = new Set(existing.map((s) => normalize(s.title ?? "")).filter(Boolean));
+  const starts = new Set(existing.map((s) => normalize(s.content).slice(0, 50)));
+  const kept: GeneratedSheet["sections"] = [];
+  for (const section of candidates) {
+    const title = normalize(section.title ?? "");
+    const start = normalize(section.content).slice(0, 50);
+    if ((title && titles.has(title)) || starts.has(start)) continue;
+    if (title) titles.add(title);
+    starts.add(start);
+    kept.push(section);
+  }
+  return kept;
 }
 
 const AUDIT_ROUNDS = 2;
@@ -237,9 +257,10 @@ async function withCoverageAudit(source: OpenAI.Chat.ChatCompletionContentPart[]
         ],
         parseExtraSections,
       );
-      const missing = extra
-        .filter((s) => s.type !== "key_point")
-        .map((s) => ({ ...s, title: s.title ?? fallbackTitle(s.content) }));
+      const missing = withoutDuplicates(
+        extra.filter((s) => s.type !== "key_point").map((s) => ({ ...s, title: s.title ?? fallbackTitle(s.content) })),
+        sheet.sections,
+      ).slice(0, 15);
       if (missing.length === 0) break;
       const body = sheet.sections.filter((s) => s.type !== "key_point");
       const keys = sheet.sections.filter((s) => s.type === "key_point");
