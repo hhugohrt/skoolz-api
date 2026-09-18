@@ -221,7 +221,7 @@ function parseAdditions(raw: string | null | undefined): Addition[] {
 }
 
 function serializeSections(sections: GeneratedSheet["sections"]): string {
-  return sections.map((s) => `[${s.type}] ${s.title ?? ""}\n${s.content}`).join("\n\n");
+  return sections.map((s) => `## ${s.title ?? s.type}\n${s.content}`).join("\n\n");
 }
 
 function normalize(value: string): string {
@@ -246,6 +246,8 @@ function absentTerms(sourceText: string, sheet: GeneratedSheet): string[] {
     terms.add(m[0]);
   }
   for (const m of sourceText.matchAll(/(?:comme|notamment|par exemple|tels? que|telles? que)\s+(?:la |le |les |l')?([\p{L}'’-]{4,})/giu)) terms.add(m[1]);
+  for (const m of sourceText.matchAll(/\(([^()\d%]{4,60})\)/g)) terms.add(m[1].trim());
+  for (const m of sourceText.matchAll(/\b(?:appelée?s?|nommée?s?|surnommée?s?)\s+(?:la |le |les |l'|des |du |une? )?([\p{L}'’-]{4,})/giu)) terms.add(m[1]);
   for (const m of compactDigits(sourceText).matchAll(/\b\d{2,}(?:[.,]\d+)?\s?%?/g)) terms.add(m[0].trim());
 
   const sourceNorm = compactDigits(normalize(sourceText));
@@ -276,9 +278,17 @@ function applyAdditions(sheet: GeneratedSheet, additions: Addition[]): { sheet: 
   for (const addition of additions) {
     const lines = addition.lines.map(cleanLine).filter(Boolean);
     if (lines.length === 0) continue;
-    const wanted = normalize(addition.section.replace(/^nouvelle\s*:\s*/i, ""));
-    const isNew = /^nouvelle\s*:/i.test(addition.section);
-    const target = isNew ? undefined : sections.find((s) => s.type !== "key_point" && normalize(s.title ?? "") === wanted);
+    const rawTitle = addition.section.replace(/^(\s*\[[^\]]*\])+\s*/, "").replace(/^#+\s*/, "");
+    const wanted = normalize(rawTitle.replace(/^nouvelle\s*:\s*/i, ""));
+    const isNew = /^nouvelle\s*:/i.test(rawTitle);
+    const candidates = sections.filter((s) => s.type !== "key_point");
+    const target = isNew
+      ? undefined
+      : candidates.find((s) => normalize(s.title ?? "") === wanted) ??
+        candidates.find((s) => {
+          const title = normalize(s.title ?? "");
+          return title.length >= 4 && wanted.length >= 4 && (title.includes(wanted) || wanted.includes(title));
+        });
 
     if (target) {
       const fresh = lines.filter((l) => !alreadyCovered(l, knownText));
@@ -288,7 +298,7 @@ function applyAdditions(sheet: GeneratedSheet, additions: Addition[]): { sheet: 
     } else {
       const fresh = lines.filter((l) => !alreadyCovered(l, knownText));
       if (fresh.length === 0) continue;
-      const title = addition.section.replace(/^nouvelle\s*:\s*/i, "").trim() || "Compléments";
+      const title = rawTitle.replace(/^nouvelle\s*:\s*/i, "").trim() || "Compléments";
       const existing = sections.find((s) => s.type !== "key_point" && normalize(s.title ?? "") === normalize(title));
       if (existing) {
         existing.content = `${existing.content}\n${fresh.map((l) => `- ${l}`).join("\n")}`;
