@@ -12,6 +12,9 @@ import { getUserById, sanitizeUser } from "./db.js";
 
 const FRONTEND_URL = process.env.FRONTEND_URL ?? "http://localhost:5220";
 const FRONTEND_PORT = new URL(FRONTEND_URL).port;
+// localhost et 127.0.0.1 ne sont pas la même origine pour un navigateur.
+// Les deux doivent rester autorisés pour que la preview locale fonctionne.
+const localOrigins = new Set([FRONTEND_URL, `http://localhost:${FRONTEND_PORT}`, `http://127.0.0.1:${FRONTEND_PORT}`]);
 
 // PUBLIC_URL = le domaine réel en production (ex: https://skoolz.club).
 // On autorise ce domaine et sa variante www. automatiquement.
@@ -36,7 +39,7 @@ export const app = express();
 app.use(
   cors({
     origin: (origin, callback) => {
-      if (!origin || origin === FRONTEND_URL || publicOrigins.has(origin) || LAN_ORIGIN_PATTERN.test(origin)) {
+      if (!origin || localOrigins.has(origin) || publicOrigins.has(origin) || LAN_ORIGIN_PATTERN.test(origin)) {
         callback(null, true);
         return;
       }

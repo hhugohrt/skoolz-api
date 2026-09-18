@@ -213,6 +213,10 @@ coursesRouter.post("/:id/generate", async (req, res) => {
       sheet = await generateRevisionSheet(text);
     }
 
+    // Régénérer (bouton "Réessayer") remplace la fiche précédente au lieu d'en empiler une seconde.
+    // Les sections partent avec elle (ON DELETE CASCADE).
+    await run("DELETE FROM revision_sheets WHERE course_id = ?", [row.id]);
+
     const sheetId = uuid();
     const createdAt = new Date().toISOString();
     await run(
@@ -220,12 +224,20 @@ coursesRouter.post("/:id/generate", async (req, res) => {
       [sheetId, row.id, req.userId!, sheet.title, sheet.summary, createdAt],
     );
 
-    for (const [index, section] of sheet.sections.entries()) {
-      await run(
-        "INSERT INTO revision_sheet_sections (id, sheet_id, type, title, content, position) VALUES (?, ?, ?, ?, ?, ?)",
-        [uuid(), sheetId, section.type, section.title ?? null, section.content, index],
-      );
-    }
+    // Un seul INSERT multi-lignes plutôt qu'un aller-retour base par section.
+    await run(
+      `INSERT INTO revision_sheet_sections (id, sheet_id, type, title, content, position) VALUES ${sheet.sections
+        .map(() => "(?, ?, ?, ?, ?, ?)")
+        .join(", ")}`,
+      sheet.sections.flatMap((section, index) => [
+        uuid(),
+        sheetId,
+        section.type,
+        section.title ?? null,
+        section.content,
+        index,
+      ]),
+    );
 
     await run("UPDATE courses SET status = 'completed', updated_at = ? WHERE id = ?", [
       new Date().toISOString(),
