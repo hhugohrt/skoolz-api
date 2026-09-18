@@ -1,10 +1,16 @@
 import { Router } from "express";
 import { v4 as uuid } from "uuid";
-import { queryAll, queryOne, run } from "../db.js";
+import { queryAll, queryOne, run, getUserById } from "../db.js";
+import { isPremium, maskText } from "../lib/billing.js";
 import { requireAuth } from "../middleware/requireAuth.js";
 
 export const sheetsRouter = Router();
 sheetsRouter.use(requireAuth);
+// Compte gratuit : les fiches sont générées mais leur contenu reste masqué tant qu'il n'y a pas d'abonnement.
+sheetsRouter.use(async (req, res, next) => {
+  res.locals.premium = isPremium(await getUserById(req.userId!));
+  next();
+});
 
 interface SheetRow {
   id: string;
@@ -38,12 +44,13 @@ const LIST_QUERY = `
   ORDER BY sheets.created_at DESC
 `;
 
-function serializeSheet(row: SheetRow) {
+function serializeSheet(row: SheetRow, locked = false) {
   return {
     id: row.id,
     courseId: row.course_id,
     title: row.title,
-    summary: row.summary,
+    summary: locked ? maskText(row.summary) : row.summary,
+    locked,
     courseTitle: row.course_title,
     subjectId: row.subject_id,
     subjectName: row.subject_name,
@@ -54,7 +61,7 @@ function serializeSheet(row: SheetRow) {
 
 sheetsRouter.get("/", async (req, res) => {
   const rows = await queryAll<SheetRow>(LIST_QUERY, [req.userId!]);
-  res.json({ sheets: rows.map(serializeSheet) });
+  res.json({ sheets: rows.map((row) => serializeSheet(row, !res.locals.premium)) });
 });
 
 const SECTION_TYPES = new Set([
@@ -69,7 +76,7 @@ const SECTION_TYPES = new Set([
   "method",
 ]);
 
-async function loadSheetDetail(id: string, userId: string) {
+async function loadSheetDetail(id: string, userId: string, premium: boolean) {
   const row = await queryOne<SheetRow>(
     `SELECT sheets.*, courses.title as course_title, courses.subject_id as subject_id,
             courses.chapter as chapter, subjects.name as subject_name
@@ -86,14 +93,20 @@ async function loadSheetDetail(id: string, userId: string) {
     [row.id],
   );
 
+  const locked = !premium;
   return {
-    ...serializeSheet(row),
-    sections: sections.map((s) => ({ id: s.id, type: s.type, title: s.title, content: s.content })),
+    ...serializeSheet(row, locked),
+    sections: sections.map((s) => ({
+      id: s.id,
+      type: s.type,
+      title: locked && s.title ? maskText(s.title) : s.title,
+      content: locked ? maskText(s.content) : s.content,
+    })),
   };
 }
 
 sheetsRouter.get("/:id", async (req, res) => {
-  const sheet = await loadSheetDetail(req.params.id, req.userId!);
+  const sheet = await loadSheetDetail(req.params.id, req.userId!, res.locals.premium);
   if (!sheet) {
     return res.status(404).json({ error: "Fiche introuvable." });
   }
@@ -102,6 +115,9 @@ sheetsRouter.get("/:id", async (req, res) => {
 
 // Édition manuelle de la fiche : titre, résumé et sections (ajout, suppression, ordre, type).
 sheetsRouter.put("/:id", async (req, res) => {
+  if (!res.locals.premium) {
+    return res.status(402).json({ error: "Débloque tes fiches pour pouvoir les modifier." });
+  }
   const owned = await queryOne<{ id: string }>("SELECT id FROM revision_sheets WHERE id = ? AND user_id = ?", [
     req.params.id,
     req.userId!,
@@ -147,7 +163,7 @@ sheetsRouter.put("/:id", async (req, res) => {
     cleaned.flatMap((section, index) => [uuid(), owned.id, section.type, section.title, section.content, index]),
   );
 
-  res.json({ sheet: await loadSheetDetail(owned.id, req.userId!) });
+  res.json({ sheet: await loadSheetDetail(owned.id, req.userId!, res.locals.premium) });
 });
 
 // Rangement de la fiche dans une matière (ou retrait) : la matière est portée par le cours.
@@ -180,5 +196,5 @@ sheetsRouter.patch("/:id/subject", async (req, res) => {
     sheet.course_id,
   ]);
 
-  res.json({ sheet: await loadSheetDetail(sheet.id, req.userId!) });
+  res.json({ sheet: await loadSheetDetail(sheet.id, req.userId!, res.locals.premium) });
 });

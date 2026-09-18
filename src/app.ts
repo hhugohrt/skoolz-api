@@ -8,6 +8,7 @@ import { subjectsRouter } from "./routes/subjects.js";
 import { onboardingRouter } from "./routes/onboarding.js";
 import { coursesRouter } from "./routes/courses.js";
 import { sheetsRouter } from "./routes/sheets.js";
+import { billingRouter } from "./routes/billing.js";
 import { uploadSessionsRouter } from "./routes/uploadSessions.js";
 import { requireAuth } from "./middleware/requireAuth.js";
 import { getUserById, sanitizeUser, queryAll, queryOne, run } from "./db.js";
@@ -150,6 +151,7 @@ app.use("/api/subjects", subjectsRouter);
 app.use("/api/onboarding", onboardingRouter);
 app.use("/api/courses", coursesRouter);
 app.use("/api/sheets", sheetsRouter);
+app.use("/api/billing", billingRouter);
 app.use("/api/upload-sessions", uploadSessionsRouter);
 
 app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {

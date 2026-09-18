@@ -1,3 +1,4 @@
+import { isPremium } from "./lib/billing.js";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createClient, type InValue } from "@libsql/client";
@@ -185,6 +186,12 @@ try {
 } catch (err) {
   if (!/duplicate column|already exists/i.test((err as Error).message)) throw err;
 }
+// Abonnement : 'free' (fiches floutées) ou 'premium'.
+try {
+  await run("ALTER TABLE users ADD COLUMN plan TEXT NOT NULL DEFAULT 'free'");
+} catch (err) {
+  if (!/duplicate column|already exists/i.test((err as Error).message)) throw err;
+}
 
 const DEFAULT_SUBJECTS = [
   "Français",
@@ -215,6 +222,7 @@ export interface DbUser {
   onboarding_completed: number;
   google_sub: string | null;
   email_verified: number;
+  plan: string;
   created_at: string;
 }
 
@@ -235,6 +243,7 @@ export function sanitizeUser(user: DbUser) {
     theme: user.theme,
     onboardingCompleted: Boolean(user.onboarding_completed),
     emailVerified: Boolean(user.email_verified),
+    isPremium: isPremium(user),
     createdAt: user.created_at,
   };
 }

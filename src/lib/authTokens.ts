@@ -2,11 +2,12 @@ import { createHash, randomBytes } from "node:crypto";
 import { v4 as uuid } from "uuid";
 import { queryOne, run } from "../db.js";
 
-export type AuthTokenType = "reset" | "verify";
+export type AuthTokenType = "reset" | "verify" | "parent_pay";
 
 const TTL_MS: Record<AuthTokenType, number> = {
   reset: 60 * 60 * 1000, // 1 h
   verify: 24 * 60 * 60 * 1000, // 24 h
+  parent_pay: 7 * 24 * 60 * 60 * 1000, // 7 jours
 };
 
 // Seul le hash est stocké : une fuite de la base ne donne pas de liens utilisables.
@@ -46,4 +47,13 @@ export async function consumeAuthToken(token: string, type: AuthTokenType): Prom
   if (!row) return null;
   await run("DELETE FROM auth_tokens WHERE id = ?", [row.id]);
   return new Date(row.expires_at).getTime() >= Date.now() ? row.user_id : null;
+}
+
+// Lecture sans consommer : le lien « demande à un parent » peut être ouvert plusieurs fois.
+export async function peekAuthToken(token: string, type: AuthTokenType): Promise<string | null> {
+  const row = await queryOne<{ user_id: string; expires_at: string }>(
+    "SELECT user_id, expires_at FROM auth_tokens WHERE token_hash = ? AND type = ?",
+    [hash(token), type],
+  );
+  return row && new Date(row.expires_at).getTime() >= Date.now() ? row.user_id : null;
 }
