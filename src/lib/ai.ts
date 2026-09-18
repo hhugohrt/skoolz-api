@@ -248,8 +248,11 @@ function absentTerms(sourceText: string, sheet: GeneratedSheet): string[] {
   for (const m of sourceText.matchAll(/(?:comme|notamment|par exemple|tels? que|telles? que)\s+(?:la |le |les |l')?([\p{L}'’-]{4,})/giu)) terms.add(m[1]);
   for (const m of compactDigits(sourceText).matchAll(/\b\d{2,}(?:[.,]\d+)?\s?%?/g)) terms.add(m[0].trim());
 
+  const sourceNorm = compactDigits(normalize(sourceText));
+  const occurrences = (t: string) => sourceNorm.split(compactDigits(normalize(t))).length - 1;
+
   return [...terms]
-    .filter((t) => !STOP_TERMS.has(normalize(t)))
+    .filter((t) => !STOP_TERMS.has(normalize(t)) && occurrences(t) <= 5)
     .filter((t) => !haystack.includes(compactDigits(normalize(t))))
     .slice(0, 40);
 }
@@ -291,6 +294,35 @@ function applyAdditions(sheet: GeneratedSheet, additions: Addition[]): { sheet: 
   return { sheet: { ...sheet, sections: sections.slice(0, MAX_SECTIONS) }, added };
 }
 
+const TARGETED_PROMPT = `Tu complètes une fiche de révision synthétique. On te donne la fiche et des PHRASES du cours dont certains termes (noms propres, chiffres, exemples) n'apparaissent pas dans la fiche.
+Pour chaque phrase, écris les informations qui manquent à la fiche en lignes TÉLÉGRAPHIQUES courtes (mots-clés, sans phrase complète, sans tiret initial, sans rien inventer) et rattache-les à la section existante la plus pertinente (titre EXACT), ou à "NOUVELLE : " suivi d'un titre de 2 à 6 mots si aucune ne convient. Ignore ce qui figure déjà dans la fiche.
+Réponds UNIQUEMENT avec {"additions": [{"section": string, "lines": string[]}]}.`;
+
+function parseForcedAdditions(raw: string | null | undefined): Addition[] {
+  if (!raw) throw new AiGenerationError("Réponse IA invalide (vide).");
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new AiGenerationError("Réponse IA invalide (JSON malformé).");
+  }
+  const result = AdditionsSchema.safeParse(parsed);
+  if (!result.success) throw new AiGenerationError("Réponse IA invalide (schéma inattendu).");
+  return result.data.additions;
+}
+
+function sentencesWithTerms(text: string, terms: string[]): string[] {
+  const wanted = terms.map((t) => compactDigits(normalize(t)));
+  return text
+    .split(/(?<=[.!?])\s+|\n+/)
+    .map((sentence) => sentence.trim())
+    .filter((sentence) => {
+      const norm = compactDigits(normalize(sentence));
+      return sentence.length > 8 && wanted.some((t) => norm.includes(t));
+    })
+    .slice(0, 12);
+}
+
 const AUDIT_ROUNDS = 2;
 
 // Passes de contrôle : un appel compare le cours à la fiche et rattache ce qui manque ; un second
@@ -324,6 +356,25 @@ async function withCoverageAudit(
     } catch (err) {
       console.error("Passe de contrôle ignorée:", (err as Error)?.message);
       break;
+    }
+  }
+
+  // Dernier filet : pour les termes du cours encore absents, le modèle reçoit la phrase exacte
+  // et doit la condenser dans la bonne section (il ne peut plus « juger » que c'est couvert).
+  if (sourceText) {
+    try {
+      const remaining = absentTerms(sourceText, sheet);
+      const sentences = remaining.length > 0 ? sentencesWithTerms(sourceText, remaining) : [];
+      if (sentences.length > 0) {
+        const additions = await completeJson(
+          TARGETED_PROMPT,
+          `FICHE ACTUELLE :\n${serializeSections(sheet.sections)}\n\nPHRASES DU COURS :\n${sentences.map((t) => `- ${t}`).join("\n")}`,
+          parseForcedAdditions,
+        );
+        sheet = applyAdditions(sheet, additions).sheet;
+      }
+    } catch (err) {
+      console.error("Passe ciblée ignorée:", (err as Error)?.message);
     }
   }
   return sheet;
