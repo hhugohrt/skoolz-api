@@ -1,7 +1,6 @@
 import { Router } from "express";
 import { queryAll, queryOne } from "../db.js";
 import { requireAuth } from "../middleware/requireAuth.js";
-import { readFile } from "../lib/storage.js";
 
 export const sheetsRouter = Router();
 sheetsRouter.use(requireAuth);
@@ -77,30 +76,10 @@ sheetsRouter.get("/:id", async (req, res) => {
     [row.id],
   );
 
-  const images = await queryAll<{ id: string; position: number }>(
-    "SELECT id, position FROM revision_sheet_images WHERE sheet_id = ? ORDER BY position ASC",
-    [row.id],
-  );
-
   res.json({
     sheet: {
       ...serializeSheet(row),
       sections: sections.map((s) => ({ id: s.id, type: s.type, title: s.title, content: s.content })),
-      images: images.map((image) => ({ id: image.id, position: image.position })),
     },
   });
-});
-
-// Sert l'image d'une fiche visuelle — protégé par le JWT comme les photos de cours.
-sheetsRouter.get("/:id/images/:imageId/file", async (req, res) => {
-  const image = await queryOne<{ storage_path: string; mime_type: string }>(
-    `SELECT img.storage_path, img.mime_type FROM revision_sheet_images img
-     JOIN revision_sheets sheets ON sheets.id = img.sheet_id
-     WHERE img.id = ? AND img.sheet_id = ? AND sheets.user_id = ?`,
-    [req.params.imageId, req.params.id, req.userId!],
-  );
-  if (!image) {
-    return res.status(404).json({ error: "Image introuvable." });
-  }
-  res.type(image.mime_type).send(await readFile(image.storage_path));
 });
