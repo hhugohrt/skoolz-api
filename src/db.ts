@@ -119,6 +119,16 @@ const SCHEMA = `
     created_at TEXT NOT NULL
   );
   CREATE INDEX IF NOT EXISTS idx_ai_usage_user ON ai_usage(user_id, created_at);
+
+  CREATE TABLE IF NOT EXISTS auth_tokens (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    type TEXT NOT NULL,
+    token_hash TEXT UNIQUE NOT NULL,
+    expires_at TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_auth_tokens_user ON auth_tokens(user_id, type);
 `;
 
 function toPgPlaceholders(sql: string): string {
@@ -168,6 +178,13 @@ try {
   if (!/duplicate column|already exists/i.test((err as Error).message)) throw err;
 }
 await run("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_google_sub ON users(google_sub)");
+// Les comptes déjà créés sont considérés comme vérifiés (DEFAULT 1) ; seules les nouvelles
+// inscriptions par mot de passe démarrent à 0 et doivent confirmer leur adresse.
+try {
+  await run("ALTER TABLE users ADD COLUMN email_verified INTEGER NOT NULL DEFAULT 1");
+} catch (err) {
+  if (!/duplicate column|already exists/i.test((err as Error).message)) throw err;
+}
 
 const DEFAULT_SUBJECTS = [
   "Français",
@@ -197,6 +214,7 @@ export interface DbUser {
   theme: string;
   onboarding_completed: number;
   google_sub: string | null;
+  email_verified: number;
   created_at: string;
 }
 
@@ -216,6 +234,7 @@ export function sanitizeUser(user: DbUser) {
     level: user.level,
     theme: user.theme,
     onboardingCompleted: Boolean(user.onboarding_completed),
+    emailVerified: Boolean(user.email_verified),
     createdAt: user.created_at,
   };
 }
