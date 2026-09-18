@@ -70,7 +70,7 @@ const AUDIT_PROMPT = `Tu contrôles une fiche de révision (synthétique) par ra
 Parcours le cours PHRASE PAR PHRASE et, pour chacune, vérifie que chaque information qu'elle contient figure dans la fiche, même sous une forme abrégée : y compris les exemples, les noms entre parenthèses ou après « comme », les noms d'impôts, de lieux, de personnes, d'institutions, d'œuvres, les dates et les chiffres.
 Procède ensuite en deux temps :
 1) Dresse la liste "missing" des éléments PRÉCIS du cours qui sont totalement ABSENTS de la fiche (cités en quelques mots). Ne liste PAS ce qui est déjà présent, même abrégé ou formulé autrement. Si la fiche est complète, "missing" est vide.
-2) Pour ces éléments manquants UNIQUEMENT, renvoie "additions" : une liste d'objets {"section": string, "lines": string[]}. "section" = le titre EXACT de la section existante de la fiche la plus pertinente pour y ajouter ces lignes ; si aucune ne convient, écris "NOUVELLE : " suivi d'un titre de 2 à 6 mots. "lines" = lignes TÉLÉGRAPHIQUES courtes (mots-clés, sans phrase complète, sans tiret initial, sans rien inventer). Si "missing" est vide, "additions" doit être vide.
+2) Pour ces éléments manquants UNIQUEMENT, renvoie "additions" : une liste d'objets {"section": string, "lines": string[]}. "section" = le titre EXACT de la section existante de la fiche la plus pertinente pour y ajouter ces lignes ; si aucune ne convient, écris "NOUVELLE : " suivi d'un titre de 2 à 6 mots. "lines" = lignes TÉLÉGRAPHIQUES courtes (mots-clés, sans phrase complète, sans tiret initial, sans rien inventer). N'ajoute une ligne QUE si elle apporte une information du cours (un fait, une date, un chiffre, un lien de cause, un nom avec son rôle) : jamais de ligne creuse du type « X : contexte de la Révolution », et rien de ce qui figure déjà dans la fiche, même abrégé. Si "missing" est vide, "additions" doit être vide.
 Réponds UNIQUEMENT avec un objet JSON {"missing": string[], "additions": [...]}.`;
 
 const IMAGE_SYSTEM_PROMPT = `${SYSTEM_PROMPT}
@@ -257,12 +257,20 @@ function absentTerms(sourceText: string, sheet: GeneratedSheet): string[] {
     .slice(0, 40);
 }
 
+// Une ligne est déjà couverte si la plupart de ses mots significatifs figurent déjà dans la fiche.
+function alreadyCovered(line: string, knownNormalized: string): boolean {
+  const words = normalize(line).split(" ").filter((w) => w.length >= 4);
+  if (words.length === 0) return true;
+  return words.filter((w) => knownNormalized.includes(w)).length / words.length >= 0.7;
+}
+
 const cleanLine = (line: string) => line.trim().replace(/^[-•*]\s*/, "");
 
 // Rattache chaque ligne manquante à la section du bon thème (la fiche reste synthétique et
 // regroupée), ou crée une section seulement si aucune ne convient. Ignore les lignes déjà présentes.
 function applyAdditions(sheet: GeneratedSheet, additions: Addition[]): { sheet: GeneratedSheet; added: number } {
   const sections = sheet.sections.map((s) => ({ ...s }));
+  const knownText = normalize(serializeSections(sections));
   let added = 0;
 
   for (const addition of additions) {
@@ -273,29 +281,30 @@ function applyAdditions(sheet: GeneratedSheet, additions: Addition[]): { sheet: 
     const target = isNew ? undefined : sections.find((s) => s.type !== "key_point" && normalize(s.title ?? "") === wanted);
 
     if (target) {
-      const known = normalize(target.content);
-      const fresh = lines.filter((l) => !known.includes(normalize(l).slice(0, 40)));
+      const fresh = lines.filter((l) => !alreadyCovered(l, knownText));
       if (fresh.length === 0) continue;
       target.content = `${target.content}\n${fresh.map((l) => `- ${l}`).join("\n")}`;
       added += fresh.length;
     } else {
+      const fresh = lines.filter((l) => !alreadyCovered(l, knownText));
+      if (fresh.length === 0) continue;
       const title = addition.section.replace(/^nouvelle\s*:\s*/i, "").trim() || "Compléments";
       const existing = sections.find((s) => s.type !== "key_point" && normalize(s.title ?? "") === normalize(title));
       if (existing) {
-        existing.content = `${existing.content}\n${lines.map((l) => `- ${l}`).join("\n")}`;
+        existing.content = `${existing.content}\n${fresh.map((l) => `- ${l}`).join("\n")}`;
       } else {
         const keyIndex = sections.findIndex((s) => s.type === "key_point");
-        const created = { type: "notion" as const, title, content: lines.map((l) => `- ${l}`).join("\n") };
+        const created = { type: "notion" as const, title, content: fresh.map((l) => `- ${l}`).join("\n") };
         sections.splice(keyIndex === -1 ? sections.length : keyIndex, 0, created);
       }
-      added += lines.length;
+      added += fresh.length;
     }
   }
   return { sheet: { ...sheet, sections: sections.slice(0, MAX_SECTIONS) }, added };
 }
 
 const TARGETED_PROMPT = `Tu complètes une fiche de révision synthétique. On te donne la fiche et des PHRASES du cours dont certains termes (noms propres, chiffres, exemples) n'apparaissent pas dans la fiche.
-Pour chaque phrase, écris les informations qui manquent à la fiche en lignes TÉLÉGRAPHIQUES courtes (mots-clés, sans phrase complète, sans tiret initial, sans rien inventer) et rattache-les à la section existante la plus pertinente (titre EXACT), ou à "NOUVELLE : " suivi d'un titre de 2 à 6 mots si aucune ne convient. Ignore ce qui figure déjà dans la fiche.
+Pour chaque phrase, écris les informations qui manquent à la fiche en lignes TÉLÉGRAPHIQUES courtes (mots-clés, sans phrase complète, sans tiret initial, sans rien inventer) et rattache-les à la section existante la plus pertinente (titre EXACT), ou à "NOUVELLE : " suivi d'un titre de 2 à 6 mots si aucune ne convient. Ignore ce qui figure déjà dans la fiche, même abrégé, et n'écris jamais de ligne creuse du type « X : contexte de la Révolution ».
 Réponds UNIQUEMENT avec un objet JSON {"additions": [{"section": string, "lines": string[]}]}.`;
 
 function parseForcedAdditions(raw: string | null | undefined): Addition[] {
@@ -339,6 +348,8 @@ async function withCoverageAudit(
   for (let round = 1; round <= AUDIT_ROUNDS; round++) {
     try {
       const hints = sourceText ? absentTerms(sourceText, sheet) : [];
+      // Sans indice déterministe, un 2e tour ne fait que réécrire ce qui existe déjà.
+      if (round > 1 && hints.length === 0) break;
       debugTrace.push(`round ${round} hints: ${hints.join(" ; ")}`); // TEMP-DEBUG
       const hintText =
         hints.length > 0
