@@ -40,7 +40,8 @@ Règles de forme :
 - Texte simple uniquement : PAS de markdown (pas de **, #, tableaux). Pour une liste, une ligne par élément commençant par "- ". Sépare les paragraphes par une ligne vide.
 - Écris les formules de façon lisible en texte brut (ex : "E = m × c²", "x₁ + x₂ = -b/a").
 - "title" : titre court (< 70 caractères). "summary" : 2-3 phrases qui tutoient l'élève ("Dans ce cours, tu vois...").
-- Entre 4 et 12 sections selon la richesse du cours.
+- Entre 3 et 8 sections selon la richesse du cours. Une section = UNE idée complète : regroupe les phrases qui parlent du même sujet (plusieurs lignes "- ..." ou un court paragraphe), ne fais JAMAIS une section par phrase.
+- Chaque section a un "title" court et parlant (ex : "Où ça se passe", "Équation bilan"), sauf éventuellement une définition très courte.
 
 Réponds UNIQUEMENT avec un objet JSON respectant exactement ce schéma :
 {
@@ -49,7 +50,7 @@ Réponds UNIQUEMENT avec un objet JSON respectant exactement ce schéma :
   "sections": [
     {
       "type": "notion" | "definition" | "formula" | "example" | "key_point" | "common_mistake" | "date" | "concept" | "method",
-      "title": string (court, optionnel),
+      "title": string (court, parlant),
       "content": string
     }
   ]
