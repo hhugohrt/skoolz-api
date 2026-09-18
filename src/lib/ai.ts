@@ -35,6 +35,7 @@ On te donne un cours. Transforme-le en fiche de révision claire, structurée et
 
 Règles de fond :
 - EXHAUSTIVITÉ ABSOLUE : la fiche doit couvrir TOUT le cours, sans exception. Chaque définition, propriété, théorème, règle, loi, formule, date, nom propre, chiffre, exemple, méthode, cas particulier, exception et remarque du cours doit apparaître dans la fiche. Tu peux condenser la FORME (phrases courtes, listes), jamais le FOND : ne supprime, ne fusionne et n'omet aucune information. En cas de doute, garde l'information.
+- Conserve TOUTES les énumérations et tous les exemples cités dans le cours (noms entre parenthèses ou après « comme », « par exemple », « tels que », « notamment » : impôts, lieux, personnes, œuvres, chiffres...). Ne les remplace jamais par une formule générique comme « divers impôts ».
 - Reste fidèle au cours : n'invente aucun fait, chiffre, date ou formule absent du document. Tu peux reformuler et clarifier, pas ajouter.
 - Respecte l'ordre logique du cours. Découpe finement : une section = UNE notion, UN événement, UNE définition, UNE formule ou UNE méthode, avec toutes ses précisions (dates, chiffres, noms) dans la section.
 - Vise 15 à 30 sections pour un cours riche (jamais moins de 8 sauf cours très court), jusqu'à 40 si nécessaire pour tout couvrir.
