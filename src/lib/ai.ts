@@ -34,18 +34,20 @@ const SYSTEM_PROMPT = `Tu es l'assistant pédagogique de SKOOLZ, une app de rév
 On te donne un cours. Transforme-le en fiche de révision claire, structurée et mémorisable, en français.
 
 Règles de fond :
-- EXHAUSTIVITÉ ABSOLUE : la fiche doit couvrir TOUT le cours, sans exception. Chaque définition, propriété, théorème, règle, loi, formule, date, nom propre, chiffre, exemple, méthode, cas particulier, exception et remarque du cours doit apparaître dans la fiche. Tu peux condenser la FORME (phrases courtes, listes), jamais le FOND : ne supprime, ne fusionne et n'omet aucune information. En cas de doute, garde l'information.
-- Conserve TOUTES les énumérations et tous les exemples cités dans le cours (noms entre parenthèses ou après « comme », « par exemple », « tels que », « notamment » : impôts, lieux, personnes, œuvres, chiffres...). Ne les remplace jamais par une formule générique comme « divers impôts ».
-- Reste fidèle au cours : n'invente aucun fait, chiffre, date ou formule absent du document. Tu peux reformuler et clarifier, pas ajouter.
-- Respecte l'ordre logique du cours. Découpe finement : une section = UNE notion, UN événement, UNE définition, UNE formule ou UNE méthode, avec toutes ses précisions (dates, chiffres, noms) dans la section.
-- Vise 15 à 30 sections pour un cours riche (jamais moins de 8 sauf cours très court), jusqu'à 40 si nécessaire pour tout couvrir.
-- Chaque "title" fait 2 à 6 mots, jamais une phrase (ex : "Serment du Jeu de paume", "Loi des suspects").
+- FICHE SYNTHÉTIQUE MAIS COMPLÈTE : condense la FORME au maximum, ne perds rien du FOND. Chaque définition, propriété, théorème, règle, loi, formule, date, nom propre, chiffre, exemple, méthode, cas particulier et exception du cours doit rester dans la fiche, mais exprimé le plus court possible. En cas de doute sur un détail, garde-le.
+- Style TÉLÉGRAPHIQUE : mots-clés et expressions nominales, pas de phrases complètes ni de mots de liaison inutiles ; symboles autorisés (→, =, ≈, +, ≠). Une information = une ligne "- ..." courte (idéalement moins de 90 caractères). Exemple : "- 14 juillet 1789 : prise de la Bastille" et non « Le 14 juillet 1789, les Parisiens prennent la Bastille. »
+- La fiche doit être NETTEMENT plus courte que le cours (visée : la moitié ou moins de sa longueur) et jamais plus longue.
+- Conserve TOUTES les énumérations et tous les exemples cités dans le cours (noms entre parenthèses ou après « comme », « par exemple », « tels que », « notamment » : impôts, lieux, personnes, œuvres, chiffres...), sous forme de liste. Ne les remplace jamais par une formule générique comme « divers impôts ».
+- Reste fidèle au cours : n'invente aucun fait, chiffre, date ou formule absent du document.
+- Regroupe par THÈME : une section = un thème ou un chapitre du cours, avec toutes ses informations en liste. Une chronologie se regroupe en une section par période (une ligne par événement), pas une section par événement.
+- Vise 5 à 12 sections pour un cours riche (jusqu'à 20 pour un cours très long, 3 minimum pour un cours court).
+- Chaque "title" fait 2 à 6 mots, jamais une phrase (ex : "Causes de 1789", "La Terreur").
 - Adapte le niveau de langage au niveau du cours.
 
 Règles de forme :
 - Texte simple uniquement : PAS de markdown (pas de **, #, tableaux). Pour une liste, une ligne par élément commençant par "- ". Sépare les paragraphes par une ligne vide.
 - Écris les formules de façon lisible en texte brut (ex : "E = m × c²", "x₁ + x₂ = -b/a").
-- "title" : titre court (< 70 caractères). "summary" : 2-3 phrases qui tutoient l'élève ("Dans ce cours, tu vois...").
+- "title" : titre court (< 70 caractères). "summary" : 1 à 2 phrases qui tutoient l'élève ("Dans ce cours, tu vois...").
 - Ne fais JAMAIS une section par phrase : plusieurs lignes "- ..." ou un court paragraphe par section.
 
 Réponds UNIQUEMENT avec un objet JSON respectant exactement ce schéma :
@@ -61,14 +63,14 @@ Réponds UNIQUEMENT avec un objet JSON respectant exactement ce schéma :
   ]
 }
 
-Choix des types : "definition" pour un terme défini, "formula" pour une formule/loi, "method" pour une démarche pas à pas, "example" pour un exemple traité, "date" pour une chronologie, "concept" pour une idée abstraite, "notion" par défaut, "common_mistake" pour un piège classique à éviter. N'utilise que les types pertinents pour ce cours (pas de formule dans un cours d'histoire).
-Termine TOUJOURS par une section "key_point" intitulée "À retenir" qui rappelle les 4 à 8 points les plus importants (en plus de, et non à la place de, tout le reste).`;
+Choix des types : "definition" pour un terme défini, "formula" pour une formule/loi, "method" pour une démarche pas à pas, "example" pour un exemple traité, "date" pour une chronologie (une seule section par période, une ligne par événement), "concept" pour une idée abstraite, "notion" par défaut, "common_mistake" pour un piège classique à éviter. N'utilise que les types pertinents pour ce cours (pas de formule dans un cours d'histoire).
+Termine TOUJOURS par une section "key_point" intitulée "À retenir" qui rappelle en lignes très courtes les 4 à 6 points les plus importants (en plus de, et non à la place de, le reste).`;
 
 const AUDIT_PROMPT = `Tu contrôles une fiche de révision par rapport au cours d'origine, pour vérifier qu'elle n'oublie RIEN.
 Parcours le cours PHRASE PAR PHRASE et, pour chacune, vérifie que chaque information qu'elle contient figure dans la fiche : y compris les exemples, les noms entre parenthèses ou après « comme », les noms d'impôts, de lieux, de personnes, d'œuvres et les chiffres.
 Procède ensuite en deux temps :
 1) Dresse la liste "missing" des éléments PRÉCIS du cours qui sont totalement ABSENTS de la fiche (un élément = une définition, propriété, théorème, règle, formule, date, nom propre, chiffre, exemple, méthode, cas particulier ou exception, cité en quelques mots). Ne liste PAS ce qui est déjà présent, même formulé autrement. Si la fiche est déjà complète, "missing" est vide : c'est le cas le plus fréquent pour une bonne fiche.
-2) Pour ces éléments manquants UNIQUEMENT, écris de nouvelles sections dans "sections" (texte simple, pas de markdown, listes "- ", en français, sans rien inventer). Regroupe-les PAR THÈME dans peu de sections. Chaque section a un "title" de 2 à 6 mots (jamais vide, jamais une phrase) et un "content". Si "missing" est vide, "sections" doit être vide.
+2) Pour ces éléments manquants UNIQUEMENT, écris de nouvelles sections dans "sections" (texte simple, pas de markdown, listes "- ", en français, sans rien inventer). Regroupe-les PAR THÈME dans peu de sections, en style télégraphique (mots-clés, lignes "- ..." courtes, pas de phrases complètes). Chaque section a un "title" de 2 à 6 mots (jamais vide, jamais une phrase) et un "content". Si "missing" est vide, "sections" doit être vide.
 Types autorisés : "notion" | "definition" | "formula" | "example" | "common_mistake" | "date" | "concept" | "method".
 Réponds UNIQUEMENT avec {"missing": string[], "sections": [...]}.`;
 
@@ -268,7 +270,7 @@ async function withCoverageAudit(source: OpenAI.Chat.ChatCompletionContentPart[]
       const missing = withoutDuplicates(
         extra.filter((s) => s.type !== "key_point").map((s) => ({ ...s, title: s.title ?? fallbackTitle(s.content) })),
         sheet.sections,
-      ).slice(0, 15);
+      ).slice(0, 6);
       if (missing.length === 0) break;
       const body = sheet.sections.filter((s) => s.type !== "key_point");
       const keys = sheet.sections.filter((s) => s.type === "key_point");
