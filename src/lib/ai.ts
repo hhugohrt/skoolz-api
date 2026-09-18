@@ -133,9 +133,10 @@ function toFriendlyError(err: unknown): Error {
   const status = (err as { status?: number })?.status;
   const code = (err as { code?: string })?.code;
   if (status === 401) return new AiNotConfiguredError("La clé API IA est invalide ou révoquée.");
-  if (code === "insufficient_quota") {
+  if (code === "insufficient_quota" || /quota|billing|credit/i.test(String((err as Error)?.message))) {
     return new AiNotConfiguredError("Le crédit du compte IA est épuisé. Recharge-le pour continuer à générer des fiches.");
   }
+  if (status === 429) console.error("OpenAI 429:", code, (err as Error)?.message);
   if (status === 429) return new AiGenerationError("L'IA est très sollicitée en ce moment. Réessaie dans une minute.");
   if (status === 400 && /image/i.test(String((err as Error).message))) {
     return new AiGenerationError("Une des photos n'a pas pu être lue. Reprends-la plus nettement et réessaie.");
@@ -143,7 +144,7 @@ function toFriendlyError(err: unknown): Error {
   if ((err as Error)?.name === "APIConnectionTimeoutError") {
     return new AiGenerationError("La génération a pris trop de temps. Réessaie, ou envoie moins de pages à la fois.");
   }
-  console.error("Erreur OpenAI:", err);
+  console.error("Erreur OpenAI:", status, code, (err as Error)?.message);
   return err instanceof Error ? err : new Error(String(err));
 }
 
