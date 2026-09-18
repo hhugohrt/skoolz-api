@@ -186,6 +186,22 @@ coursesRouter.post("/:id/generate", async (req, res) => {
     return res.status(404).json({ error: "Cours introuvable." });
   }
 
+  // Chaque génération coûte des appels IA : plafond par élève et par jour pour éviter les abus.
+  const dailyLimit = Number(process.env.DAILY_GENERATION_LIMIT ?? 30);
+  const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+  const usage = await queryOne<{ count: number }>(
+    "SELECT COUNT(*) as count FROM ai_usage WHERE user_id = ? AND created_at > ?",
+    [req.userId!, since],
+  );
+  if (Number(usage?.count ?? 0) >= dailyLimit) {
+    return res.status(429).json({ error: `Tu as atteint la limite de ${dailyLimit} fiches par jour. Réessaie demain.` });
+  }
+  await run("INSERT INTO ai_usage (id, user_id, created_at) VALUES (?, ?, ?)", [
+    uuid(),
+    req.userId!,
+    new Date().toISOString(),
+  ]);
+
   await run("UPDATE courses SET status = 'processing', updated_at = ? WHERE id = ?", [
     new Date().toISOString(),
     row.id,

@@ -112,6 +112,13 @@ const SCHEMA = `
     created_at TEXT NOT NULL
   );
   CREATE INDEX IF NOT EXISTS idx_upload_session_photos_session ON upload_session_photos(session_id);
+
+  CREATE TABLE IF NOT EXISTS ai_usage (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_ai_usage_user ON ai_usage(user_id, created_at);
 `;
 
 function toPgPlaceholders(sql: string): string {
@@ -154,6 +161,14 @@ if (usePostgres) {
   await client.executeMultiple(`PRAGMA foreign_keys = ON;\n${SCHEMA}`);
 }
 
+// Migrations légères (bases déjà créées) : SQLite n'a pas "ADD COLUMN IF NOT EXISTS".
+try {
+  await run("ALTER TABLE users ADD COLUMN google_sub TEXT");
+} catch (err) {
+  if (!/duplicate column|already exists/i.test((err as Error).message)) throw err;
+}
+await run("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_google_sub ON users(google_sub)");
+
 const DEFAULT_SUBJECTS = [
   "Français",
   "Mathématiques",
@@ -181,6 +196,7 @@ export interface DbUser {
   level: string | null;
   theme: string;
   onboarding_completed: number;
+  google_sub: string | null;
   created_at: string;
 }
 
