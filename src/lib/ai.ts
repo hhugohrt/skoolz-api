@@ -66,13 +66,12 @@ Réponds UNIQUEMENT avec un objet JSON respectant exactement ce schéma :
 Choix des types : "definition" pour un terme défini, "formula" pour une formule/loi, "method" pour une démarche pas à pas, "example" pour un exemple traité, "date" pour une chronologie (une seule section par période, une ligne par événement), "concept" pour une idée abstraite, "notion" par défaut, "common_mistake" pour un piège classique à éviter. N'utilise que les types pertinents pour ce cours (pas de formule dans un cours d'histoire).
 Termine TOUJOURS par une section "key_point" intitulée "À retenir" qui rappelle en lignes très courtes les 4 à 6 points les plus importants (en plus de, et non à la place de, le reste).`;
 
-const AUDIT_PROMPT = `Tu contrôles une fiche de révision par rapport au cours d'origine, pour vérifier qu'elle n'oublie RIEN.
-Parcours le cours PHRASE PAR PHRASE et, pour chacune, vérifie que chaque information qu'elle contient figure dans la fiche : y compris les exemples, les noms entre parenthèses ou après « comme », les noms d'impôts, de lieux, de personnes, d'œuvres et les chiffres.
+const AUDIT_PROMPT = `Tu contrôles une fiche de révision (synthétique) par rapport au cours d'origine, pour vérifier qu'elle n'oublie RIEN.
+Parcours le cours PHRASE PAR PHRASE et, pour chacune, vérifie que chaque information qu'elle contient figure dans la fiche, même sous une forme abrégée : y compris les exemples, les noms entre parenthèses ou après « comme », les noms d'impôts, de lieux, de personnes, d'institutions, d'œuvres, les dates et les chiffres.
 Procède ensuite en deux temps :
-1) Dresse la liste "missing" des éléments PRÉCIS du cours qui sont totalement ABSENTS de la fiche (un élément = une définition, propriété, théorème, règle, formule, date, nom propre, chiffre, exemple, méthode, cas particulier ou exception, cité en quelques mots). Ne liste PAS ce qui est déjà présent, même formulé autrement. Si la fiche est déjà complète, "missing" est vide : c'est le cas le plus fréquent pour une bonne fiche.
-2) Pour ces éléments manquants UNIQUEMENT, écris de nouvelles sections dans "sections" (texte simple, pas de markdown, listes "- ", en français, sans rien inventer). Regroupe-les PAR THÈME dans peu de sections, en style télégraphique (mots-clés, lignes "- ..." courtes, pas de phrases complètes). Chaque section a un "title" de 2 à 6 mots (jamais vide, jamais une phrase) et un "content". Si "missing" est vide, "sections" doit être vide.
-Types autorisés : "notion" | "definition" | "formula" | "example" | "common_mistake" | "date" | "concept" | "method".
-Réponds UNIQUEMENT avec {"missing": string[], "sections": [...]}.`;
+1) Dresse la liste "missing" des éléments PRÉCIS du cours qui sont totalement ABSENTS de la fiche (cités en quelques mots). Ne liste PAS ce qui est déjà présent, même abrégé ou formulé autrement. Si la fiche est complète, "missing" est vide.
+2) Pour ces éléments manquants UNIQUEMENT, renvoie "additions" : une liste d'objets {"section": string, "lines": string[]}. "section" = le titre EXACT de la section existante de la fiche la plus pertinente pour y ajouter ces lignes ; si aucune ne convient, écris "NOUVELLE : " suivi d'un titre de 2 à 6 mots. "lines" = lignes TÉLÉGRAPHIQUES courtes (mots-clés, sans phrase complète, sans tiret initial, sans rien inventer). Si "missing" est vide, "additions" doit être vide.
+Réponds UNIQUEMENT avec {"missing": string[], "additions": [...]}.`;
 
 const IMAGE_SYSTEM_PROMPT = `${SYSTEM_PROMPT}
 
@@ -198,12 +197,16 @@ async function completeJson<T>(
   }
 }
 
-const ExtraSectionsSchema = z.object({
+const AdditionsSchema = z.object({
   missing: z.array(z.string()).default([]),
-  sections: z.array(SectionSchema).default([]),
+  additions: z
+    .array(z.object({ section: z.string().trim().min(1), lines: z.array(z.string()).default([]) }))
+    .default([]),
 });
 
-function parseExtraSections(raw: string | null | undefined) {
+type Addition = z.infer<typeof AdditionsSchema>["additions"][number];
+
+function parseAdditions(raw: string | null | undefined): Addition[] {
   if (!raw) throw new AiGenerationError("Réponse IA invalide (vide).");
   let parsed: unknown;
   try {
@@ -211,70 +214,78 @@ function parseExtraSections(raw: string | null | undefined) {
   } catch {
     throw new AiGenerationError("Réponse IA invalide (JSON malformé).");
   }
-  const result = ExtraSectionsSchema.safeParse(parsed);
+  const result = AdditionsSchema.safeParse(parsed);
   if (!result.success) throw new AiGenerationError("Réponse IA invalide (schéma inattendu).");
-  // Aucune omission déclarée : on ignore d'éventuelles sections superflues.
-  return result.data.missing.length > 0 ? result.data.sections : [];
+  // Aucune omission déclarée : on ignore d'éventuelles additions superflues.
+  return result.data.missing.length > 0 ? result.data.additions : [];
 }
 
 function serializeSections(sections: GeneratedSheet["sections"]): string {
   return sections.map((s) => `[${s.type}] ${s.title ?? ""}\n${s.content}`).join("\n\n");
 }
 
-// Titre de repli si le modèle n'en a pas donné : les premiers mots de la première ligne.
-function fallbackTitle(content: string): string {
-  const first = content.split("\n")[0].replace(/^[-•*]\s+/, "").trim();
-  const words = first.split(/\s+/).slice(0, 6).join(" ").replace(/[:;,.\s]+$/, "");
-  return words || "Complément";
-}
-
 function normalize(value: string): string {
   return value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 }
 
-// Écarte les sections déjà présentes (même titre, ou même début de contenu), y compris
-// celles ajoutées par un tour précédent : le contrôle a tendance à se répéter.
-function withoutDuplicates(candidates: GeneratedSheet["sections"], existing: GeneratedSheet["sections"]) {
-  const titles = new Set(existing.map((s) => normalize(s.title ?? "")).filter(Boolean));
-  const starts = new Set(existing.map((s) => normalize(s.content).slice(0, 50)));
-  const kept: GeneratedSheet["sections"] = [];
-  for (const section of candidates) {
-    const title = normalize(section.title ?? "");
-    const start = normalize(section.content).slice(0, 50);
-    if ((title && titles.has(title)) || starts.has(start)) continue;
-    if (title) titles.add(title);
-    starts.add(start);
-    kept.push(section);
+const cleanLine = (line: string) => line.trim().replace(/^[-•*]\s*/, "");
+
+// Rattache chaque ligne manquante à la section du bon thème (la fiche reste synthétique et
+// regroupée), ou crée une section seulement si aucune ne convient. Ignore les lignes déjà présentes.
+function applyAdditions(sheet: GeneratedSheet, additions: Addition[]): { sheet: GeneratedSheet; added: number } {
+  const sections = sheet.sections.map((s) => ({ ...s }));
+  let added = 0;
+
+  for (const addition of additions) {
+    const lines = addition.lines.map(cleanLine).filter(Boolean);
+    if (lines.length === 0) continue;
+    const wanted = normalize(addition.section.replace(/^nouvelle\s*:\s*/i, ""));
+    const isNew = /^nouvelle\s*:/i.test(addition.section);
+    const target = isNew ? undefined : sections.find((s) => s.type !== "key_point" && normalize(s.title ?? "") === wanted);
+
+    if (target) {
+      const known = normalize(target.content);
+      const fresh = lines.filter((l) => !known.includes(normalize(l).slice(0, 40)));
+      if (fresh.length === 0) continue;
+      target.content = `${target.content}\n${fresh.map((l) => `- ${l}`).join("\n")}`;
+      added += fresh.length;
+    } else {
+      const title = addition.section.replace(/^nouvelle\s*:\s*/i, "").trim() || "Compléments";
+      const existing = sections.find((s) => s.type !== "key_point" && normalize(s.title ?? "") === normalize(title));
+      if (existing) {
+        existing.content = `${existing.content}\n${lines.map((l) => `- ${l}`).join("\n")}`;
+      } else {
+        const keyIndex = sections.findIndex((s) => s.type === "key_point");
+        const created = { type: "notion" as const, title, content: lines.map((l) => `- ${l}`).join("\n") };
+        sections.splice(keyIndex === -1 ? sections.length : keyIndex, 0, created);
+      }
+      added += lines.length;
+    }
   }
-  return kept;
+  return { sheet: { ...sheet, sections: sections.slice(0, MAX_SECTIONS) }, added };
 }
 
 const AUDIT_ROUNDS = 2;
 
-// Passes de contrôle : un appel compare le cours à la fiche et ajoute ce qui manque ; un second
+// Passes de contrôle : un appel compare le cours à la fiche et rattache ce qui manque ; un second
 // tour rattrape ce que le premier a laissé passer. Un échec ici ne doit jamais faire perdre la
 // fiche déjà générée.
 async function withCoverageAudit(source: OpenAI.Chat.ChatCompletionContentPart[], draft: GeneratedSheet): Promise<GeneratedSheet> {
   let sheet = draft;
   for (let round = 1; round <= AUDIT_ROUNDS; round++) {
     try {
-      const extra = await completeJson(
+      const additions = await completeJson(
         AUDIT_PROMPT,
         [
           { type: "text", text: "COURS D'ORIGINE :" },
           ...source,
           { type: "text", text: `FICHE ACTUELLE :\n${serializeSections(sheet.sections)}` },
         ],
-        parseExtraSections,
+        parseAdditions,
       );
-      const missing = withoutDuplicates(
-        extra.filter((s) => s.type !== "key_point").map((s) => ({ ...s, title: s.title ?? fallbackTitle(s.content) })),
-        sheet.sections,
-      ).slice(0, 6);
-      if (missing.length === 0) break;
-      const body = sheet.sections.filter((s) => s.type !== "key_point");
-      const keys = sheet.sections.filter((s) => s.type === "key_point");
-      sheet = { ...sheet, sections: [...body, ...missing, ...keys].slice(0, MAX_SECTIONS) };
+      const result = applyAdditions(sheet, additions);
+      sheet = result.sheet;
+      if (result.added === 0) break;
     } catch (err) {
       console.error("Passe de contrôle ignorée:", (err as Error)?.message);
       break;
