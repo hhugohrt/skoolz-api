@@ -10,7 +10,7 @@ import { coursesRouter } from "./routes/courses.js";
 import { sheetsRouter } from "./routes/sheets.js";
 import { uploadSessionsRouter } from "./routes/uploadSessions.js";
 import { requireAuth } from "./middleware/requireAuth.js";
-import { getUserById, sanitizeUser, queryAll, run } from "./db.js";
+import { getUserById, sanitizeUser, queryAll, queryOne, run } from "./db.js";
 import { deleteFile } from "./lib/storage.js";
 
 const FRONTEND_URL = process.env.FRONTEND_URL ?? "http://localhost:5220";
@@ -75,6 +75,46 @@ app.get("/api/me", requireAuth, async (req, res) => {
   if (!user) {
     return res.status(404).json({ error: "Utilisateur introuvable." });
   }
+  res.json({ user: sanitizeUser(user) });
+});
+
+// Modification du profil : prénom, niveau et/ou matières suivies (chaque champ est facultatif).
+app.patch("/api/me", requireAuth, async (req, res) => {
+  const { firstName, level, subjectIds } = req.body ?? {};
+  const userId = req.userId!;
+
+  if (firstName !== undefined) {
+    if (typeof firstName !== "string" || firstName.trim().length === 0 || firstName.trim().length > 50) {
+      return res.status(400).json({ error: "Prénom invalide." });
+    }
+  }
+  if (level !== undefined && (typeof level !== "string" || !["3e", "seconde", "premiere", "terminale", "superieur"].includes(level))) {
+    return res.status(400).json({ error: "Niveau invalide." });
+  }
+  if (subjectIds !== undefined) {
+    if (!Array.isArray(subjectIds) || subjectIds.length > 60 || subjectIds.some((id) => typeof id !== "string")) {
+      return res.status(400).json({ error: "Matières invalides." });
+    }
+    // Uniquement des matières communes ou créées par l'élève lui-même.
+    for (const id of subjectIds as string[]) {
+      const ok = await queryOne<{ id: string }>(
+        "SELECT id FROM subjects WHERE id = ? AND (is_custom = 0 OR created_by = ?)",
+        [id, userId],
+      );
+      if (!ok) return res.status(400).json({ error: "Matière inconnue." });
+    }
+  }
+
+  if (firstName !== undefined) await run("UPDATE users SET first_name = ? WHERE id = ?", [firstName.trim(), userId]);
+  if (level !== undefined) await run("UPDATE users SET level = ? WHERE id = ?", [level, userId]);
+  if (subjectIds !== undefined) {
+    await run("DELETE FROM user_subjects WHERE user_id = ?", [userId]);
+    for (const id of subjectIds as string[]) {
+      await run("INSERT INTO user_subjects (user_id, subject_id) VALUES (?, ?) ON CONFLICT DO NOTHING", [userId, id]);
+    }
+  }
+
+  const user = (await getUserById(userId))!;
   res.json({ user: sanitizeUser(user) });
 });
 
