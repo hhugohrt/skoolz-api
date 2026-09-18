@@ -281,7 +281,7 @@ function applyAdditions(sheet: GeneratedSheet, additions: Addition[]): { sheet: 
     const rawTitle = addition.section.replace(/^(\s*\[[^\]]*\])+\s*/, "").replace(/^#+\s*/, "");
     const wanted = normalize(rawTitle.replace(/^nouvelle\s*:\s*/i, ""));
     const isNew = /^nouvelle\s*:/i.test(rawTitle);
-    const candidates = sections.filter((s) => s.type !== "key_point");
+    const candidates = sections;
     const target = isNew
       ? undefined
       : candidates.find((s) => normalize(s.title ?? "") === wanted) ??
