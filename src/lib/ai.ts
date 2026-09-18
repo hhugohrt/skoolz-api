@@ -464,3 +464,31 @@ export async function generateRevisionSheetFromImages(images: ImageInput[]): Pro
 
   return buildSheet(IMAGE_SYSTEM_PROMPT, [{ type: "text", text: introText }, ...imageBlocks]);
 }
+
+const SUBJECT_PROMPT = `Tu classes une fiche de révision dans une matière scolaire.
+Choisis UNE matière dans la liste fournie, celle qui correspond le mieux au contenu de la fiche. Si aucune ne correspond clairement, réponds null : ne force jamais un choix.
+Recopie le nom EXACTEMENT comme dans la liste.
+Réponds UNIQUEMENT avec un objet JSON {"subject": string | null}.`;
+
+// Renvoie l'id de la matière la plus plausible parmi celles proposées, ou null.
+// Sert à proposer « je range ta fiche dans cette matière ? » : l'élève garde toujours le dernier mot.
+export async function suggestSubject(
+  sheet: GeneratedSheet,
+  subjects: { id: string; name: string }[],
+): Promise<string | null> {
+  if (!process.env.OPENAI_API_KEY || subjects.length === 0) return null;
+
+  const outline = `${sheet.title}\n${sheet.summary}\nSections : ${sheet.sections.map((s) => s.title ?? "").filter(Boolean).join(", ")}`;
+  const chosen = await completeJson(
+    SUBJECT_PROMPT,
+    `Matières possibles : ${subjects.map((s) => s.name).join(" ; ")}\n\nFiche :\n${outline}`,
+    (raw) => {
+      const parsed = z.object({ subject: z.string().nullable() }).safeParse(JSON.parse(raw ?? "{}"));
+      if (!parsed.success) throw new AiGenerationError("Réponse IA invalide (matière).");
+      return parsed.data.subject;
+    },
+  );
+  if (!chosen) return null;
+  const wanted = normalize(chosen);
+  return subjects.find((s) => normalize(s.name) === wanted)?.id ?? null;
+}

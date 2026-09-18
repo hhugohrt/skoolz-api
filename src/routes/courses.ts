@@ -9,6 +9,7 @@ import { extractText, UnsupportedFileError } from "../lib/extractText.js";
 import {
   generateRevisionSheet,
   generateRevisionSheetFromImages,
+  suggestSubject,
   AiNotConfiguredError,
   AiGenerationError,
 } from "../lib/ai.js";
@@ -244,7 +245,25 @@ coursesRouter.post("/:id/generate", async (req, res) => {
       row.id,
     ]);
 
-    res.json({ sheetId });
+    // Suggestion de rangement : jamais bloquante, l'élève confirme ou choisit ailleurs côté app.
+    let suggestedSubject: { id: string; name: string } | null = null;
+    if (!row.subject_id) {
+      try {
+        let candidates = await queryAll<{ id: string; name: string }>(
+          "SELECT s.id, s.name FROM subjects s JOIN user_subjects us ON us.subject_id = s.id WHERE us.user_id = ?",
+          [req.userId!],
+        );
+        if (candidates.length === 0) {
+          candidates = await queryAll<{ id: string; name: string }>("SELECT id, name FROM subjects WHERE is_custom = 0");
+        }
+        const subjectId = await suggestSubject(sheet, candidates);
+        suggestedSubject = candidates.find((s) => s.id === subjectId) ?? null;
+      } catch (subjectErr) {
+        console.error("Suggestion de matière ignorée:", (subjectErr as Error)?.message);
+      }
+    }
+
+    res.json({ sheetId, suggestedSubject });
   } catch (err) {
     const message =
       err instanceof UnsupportedFileError || err instanceof AiNotConfiguredError || err instanceof AiGenerationError
