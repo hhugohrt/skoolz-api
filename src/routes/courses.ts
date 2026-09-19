@@ -288,8 +288,9 @@ coursesRouter.post("/:id/generate", async (req, res) => {
         : "Abonne-toi pour générer plus de fiches.",
     });
   }
+  const usageId = uuid();
   await run("INSERT INTO ai_usage (id, user_id, created_at) VALUES (?, ?, ?)", [
-    uuid(),
+    usageId,
     req.userId!,
     new Date().toISOString(),
   ]);
@@ -373,6 +374,8 @@ coursesRouter.post("/:id/generate", async (req, res) => {
 
     res.json({ sheetId, suggestedSubject });
   } catch (err) {
+    // Une génération qui échoue ne doit pas consommer le quota de l'élève.
+    await run("DELETE FROM ai_usage WHERE id = ?", [usageId]).catch(() => {});
     const message =
       err instanceof UnsupportedFileError || err instanceof AiNotConfiguredError || err instanceof AiGenerationError
         ? err.message
