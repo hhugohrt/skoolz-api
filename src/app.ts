@@ -65,6 +65,7 @@ app.use(
     },
   }),
 );
+app.use("/api/billing/webhook", express.raw({ type: "*/*", limit: "1mb" }));
 app.use(express.json());
 
 app.get("/api/health", (_req, res) => {

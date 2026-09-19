@@ -2,7 +2,8 @@ import path from "node:path";
 import { Router } from "express";
 import multer from "multer";
 import { v4 as uuid } from "uuid";
-import { queryAll, queryOne, run } from "../db.js";
+import { queryAll, queryOne, run, getUserById } from "../db.js";
+import { isPremium } from "../lib/billing.js";
 import { requireAuth } from "../middleware/requireAuth.js";
 import { saveFile, deleteFile } from "../lib/storage.js";
 import { extractText, UnsupportedFileError } from "../lib/extractText.js";
@@ -187,14 +188,25 @@ coursesRouter.post("/:id/generate", async (req, res) => {
   }
 
   // Chaque génération coûte des appels IA : plafond par élève et par jour pour éviter les abus.
-  const dailyLimit = Number(process.env.DAILY_GENERATION_LIMIT ?? 30);
+  // Comptes gratuits : quota très réduit (leurs fiches restent floutées). Abonnés : quota confortable.
+  const premium = isPremium(await getUserById(req.userId!));
+  const dailyLimit = premium
+    ? Number(process.env.DAILY_GENERATION_LIMIT ?? 15)
+    : Number(process.env.FREE_DAILY_GENERATIONS ?? 2);
+  if (dailyLimit <= 0) {
+    return res.status(402).json({ error: "Abonne-toi pour générer tes fiches." });
+  }
   const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
   const usage = await queryOne<{ count: number }>(
     "SELECT COUNT(*) as count FROM ai_usage WHERE user_id = ? AND created_at > ?",
     [req.userId!, since],
   );
   if (Number(usage?.count ?? 0) >= dailyLimit) {
-    return res.status(429).json({ error: `Tu as atteint la limite de ${dailyLimit} fiches par jour. Réessaie demain.` });
+    return res.status(premium ? 429 : 402).json({
+      error: premium
+        ? `Tu as atteint la limite de ${dailyLimit} fiches par jour. Réessaie demain.`
+        : "Abonne-toi pour générer plus de fiches.",
+    });
   }
   await run("INSERT INTO ai_usage (id, user_id, created_at) VALUES (?, ?, ?)", [
     uuid(),

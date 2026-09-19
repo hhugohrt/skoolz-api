@@ -192,6 +192,18 @@ try {
 } catch (err) {
   if (!/duplicate column|already exists/i.test((err as Error).message)) throw err;
 }
+try {
+  await run("ALTER TABLE users ADD COLUMN whop_membership_id TEXT");
+} catch (err) {
+  if (!/duplicate column|already exists/i.test((err as Error).message)) throw err;
+}
+// Sessions de paiement Whop créées par l'API : relient un paiement reçu par webhook à l'élève à débloquer.
+await run(`CREATE TABLE IF NOT EXISTS checkouts (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  plan TEXT NOT NULL,
+  created_at TEXT NOT NULL
+)`);
 
 const DEFAULT_SUBJECTS = [
   "Français",
