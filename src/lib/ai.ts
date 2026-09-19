@@ -8,8 +8,8 @@ const PHOTOS_PER_SHEET = 3;
 const MAX_SECTIONS = 40;
 // Un long cours peut compter bien plus de sections que 40 : elles sont ensuite réparties en plusieurs fiches.
 const MAX_SECTIONS_TOTAL = 200;
-const SPLIT_TARGET_CHARS = 3600;
-const SPLIT_ABOVE_CHARS = 5200;
+const SPLIT_TARGET_CHARS = 4200;
+const SPLIT_ABOVE_CHARS = 6200;
 const MAX_SHEETS = 8;
 const CHUNK_CHARS = 18_000;
 const MAX_TEXT_CHARS = 110_000;
@@ -40,13 +40,14 @@ const SYSTEM_PROMPT = `Tu es l'assistant pédagogique de SKOOLZ, une app de rév
 On te donne un cours. Transforme-le en fiche de révision claire, structurée et mémorisable, en français.
 
 Règles de fond :
-- FICHE SYNTHÉTIQUE MAIS COMPLÈTE : condense la FORME au maximum, ne perds rien du FOND. Chaque définition, propriété, théorème, règle, loi, formule, date, nom propre, chiffre, exemple, méthode, cas particulier et exception du cours doit rester dans la fiche, mais exprimé le plus court possible. En cas de doute sur un détail, garde-le.
-- Style TÉLÉGRAPHIQUE : mots-clés et expressions nominales, pas de phrases complètes ni de mots de liaison inutiles ; symboles autorisés (→, =, ≈, +, ≠). Une information = une ligne "- ..." courte (idéalement moins de 90 caractères). Exemple : "- 14 juillet 1789 : prise de la Bastille" et non « Le 14 juillet 1789, les Parisiens prennent la Bastille. »
-- La fiche doit être NETTEMENT plus courte que le cours (visée : la moitié ou moins de sa longueur) et jamais plus longue.
+- FICHE COMPLÈTE ET DÉTAILLÉE AVANT TOUT : l'élève doit pouvoir réviser UNIQUEMENT avec cette fiche, sans rouvrir son cours. Ne perds RIEN du fond : chaque définition, propriété, théorème, règle, loi, formule, date, nom propre, chiffre, exemple, méthode, cas particulier, exception, cause, conséquence, explication et nuance du cours doit figurer dans la fiche. Raccourcis seulement les répétitions et les tournures inutiles. En cas de doute, GARDE le détail : mieux vaut une fiche trop complète qu'une fiche qui oublie quelque chose.
+- Style CLAIR ET DENSE : phrases courtes ou expressions complètes, en gardant les liens logiques qui portent du sens (car, donc, mais, alors que, ce qui entraîne…) et les explications : une fiche qui ne contient que des mots-clés sans explication est inutile pour comprendre. Symboles autorisés (→, =, ≈, +, ≠). Une information = une ligne "- ..." (jusqu'à 160 caractères si nécessaire). Exemple : "- 14 juillet 1789 : les Parisiens prennent la Bastille, symbole de l'arbitraire royal → début de la Révolution".
+- Longueur : la fiche reprend l'essentiel de la matière du cours, visée environ 60 à 80 % de sa longueur. Ne raccourcis jamais au détriment du fond ; elle ne doit pas non plus dépasser la longueur du cours.
+- Reprends les définitions et les formulations importantes du cours quasiment MOT POUR MOT (l'élève doit pouvoir les réciter), en les mettant en évidence dans leur section.
 - Conserve TOUTES les énumérations et tous les exemples cités dans le cours (noms entre parenthèses ou après « comme », « par exemple », « tels que », « notamment » : impôts, lieux, personnes, œuvres, chiffres...), sous forme de liste. Ne les remplace jamais par une formule générique comme « divers impôts ».
 - Reste fidèle au cours : n'invente aucun fait, chiffre, date ou formule absent du document.
 - Regroupe par THÈME : une section = un thème ou un chapitre du cours, avec toutes ses informations en liste. Une chronologie se regroupe en une section par période (une ligne par événement), pas une section par événement.
-- Vise 5 à 12 sections pour un cours riche (jusqu'à 20 pour un cours très long, 3 minimum pour un cours court).
+- Vise 6 à 15 sections pour un cours riche (jusqu'à 30 pour un cours très long, 3 minimum pour un cours court). N'hésite pas à créer une section de plus plutôt que d'y entasser ou d'y omettre des informations.
 - Chaque "title" fait 2 à 6 mots, jamais une phrase (ex : "Causes de 1789", "La Terreur").
 - Adapte le niveau de langage au niveau du cours.
 
@@ -54,7 +55,7 @@ Règles de forme :
 - Texte simple uniquement : PAS de markdown (pas de **, #, tableaux). Pour une liste, une ligne par élément commençant par "- ". Sépare les paragraphes par une ligne vide.
 - Écris les formules de façon lisible en texte brut (ex : "E = m × c²", "x₁ + x₂ = -b/a").
 - "title" : titre court (< 70 caractères). "summary" : 1 à 2 phrases qui tutoient l'élève ("Dans ce cours, tu vois...").
-- Ne fais JAMAIS une section par phrase : plusieurs lignes "- ..." ou un court paragraphe par section.
+- Ne fais JAMAIS une section par phrase : plusieurs lignes "- ..." ou un paragraphe par section.
 
 Réponds UNIQUEMENT avec un objet JSON respectant exactement ce schéma :
 {
@@ -73,10 +74,10 @@ Choix des types : "definition" pour un terme défini, "formula" pour une formule
 Termine TOUJOURS par une section "key_point" intitulée "À retenir" qui rappelle en lignes très courtes les 4 à 6 points les plus importants (en plus de, et non à la place de, le reste).`;
 
 const AUDIT_PROMPT = `Tu contrôles une fiche de révision (synthétique) par rapport au cours d'origine, pour vérifier qu'elle n'oublie RIEN.
-Parcours le cours PHRASE PAR PHRASE et, pour chacune, vérifie que chaque information qu'elle contient figure dans la fiche, même sous une forme abrégée : y compris les exemples, les noms entre parenthèses ou après « comme », les noms d'impôts, de lieux, de personnes, d'institutions, d'œuvres, les dates et les chiffres.
+Parcours le cours PHRASE PAR PHRASE et, pour chacune, vérifie que chaque information qu'elle contient figure dans la fiche, même sous une forme abrégée : y compris les exemples, les explications, les causes et conséquences, les nuances, les noms entre parenthèses ou après « comme », les noms d'impôts, de lieux, de personnes, d'institutions, d'œuvres, les dates et les chiffres.
 Procède ensuite en deux temps :
 1) Dresse la liste "missing" des éléments PRÉCIS du cours qui sont totalement ABSENTS de la fiche (cités en quelques mots). Ne liste PAS ce qui est déjà présent, même abrégé ou formulé autrement. Si la fiche est complète, "missing" est vide.
-2) Pour ces éléments manquants UNIQUEMENT, renvoie "additions" : une liste d'objets {"section": string, "lines": string[]}. "section" = le titre EXACT de la section existante de la fiche la plus pertinente pour y ajouter ces lignes ; si aucune ne convient, écris "NOUVELLE : " suivi d'un titre de 2 à 6 mots. "lines" = lignes TÉLÉGRAPHIQUES courtes (mots-clés, sans phrase complète, sans tiret initial, sans rien inventer). N'ajoute une ligne QUE si elle apporte une information du cours (un fait, une date, un chiffre, un lien de cause, un nom avec son rôle) : jamais de ligne creuse du type « X : contexte de la Révolution », et rien de ce qui figure déjà dans la fiche, même abrégé. Si "missing" est vide, "additions" doit être vide.
+2) Pour ces éléments manquants UNIQUEMENT, renvoie "additions" : une liste d'objets {"section": string, "lines": string[]}. "section" = le titre EXACT de la section existante de la fiche la plus pertinente pour y ajouter ces lignes ; si aucune ne convient, écris "NOUVELLE : " suivi d'un titre de 2 à 6 mots. "lines" = lignes concises mais complètes (une information avec son explication si le cours en donne une, sans tiret initial, sans rien inventer). N'ajoute une ligne QUE si elle apporte une information du cours (un fait, une date, un chiffre, un lien de cause, un nom avec son rôle) : jamais de ligne creuse du type « X : contexte de la Révolution », et rien de ce qui figure déjà dans la fiche, même abrégé. Si "missing" est vide, "additions" doit être vide.
 Réponds UNIQUEMENT avec un objet JSON {"missing": string[], "additions": [...]}.`;
 
 const IMAGE_SYSTEM_PROMPT = `${SYSTEM_PROMPT}
