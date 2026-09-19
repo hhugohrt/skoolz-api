@@ -148,6 +148,86 @@ coursesRouter.post("/", (req, res) => {
   });
 });
 
+// Import de plusieurs photos (téléphone) : un cours vide est créé, puis chaque photo est ajoutée une par une
+// (les requêtes restent petites, ce qui évite la limite de taille des fonctions serverless).
+const MAX_PHOTOS = 20;
+const IMAGE_MIME_TYPES = new Set(["image/jpeg", "image/png", "image/webp", "image/heic", "image/heif"]);
+const photoUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: MAX_FILE_SIZE },
+  fileFilter: (_req, file, cb) => {
+    if (!IMAGE_MIME_TYPES.has(file.mimetype)) {
+      cb(new Error("UNSUPPORTED_TYPE"));
+      return;
+    }
+    cb(null, true);
+  },
+});
+
+coursesRouter.post("/photo-course", async (req, res) => {
+  const id = uuid();
+  const now = new Date().toISOString();
+  await run("INSERT INTO courses (id, user_id, title, status, created_at, updated_at) VALUES (?, ?, ?, 'uploaded', ?, ?)", [
+    id,
+    req.userId!,
+    "Photos de cours",
+    now,
+    now,
+  ]);
+  const row = (await queryOne<CourseRow>("SELECT * FROM courses WHERE id = ?", [id]))!;
+  res.status(201).json({ course: await serializeCourse(row) });
+});
+
+coursesRouter.post("/:id/photos", (req, res) => {
+  photoUpload.single("photo")(req, res, async (err) => {
+    if (err) {
+      if (err.message === "UNSUPPORTED_TYPE") {
+        return res.status(400).json({ error: "Format non supporté : utilise des photos JPEG, PNG, WebP ou HEIC." });
+      }
+      if (err instanceof multer.MulterError && err.code === "LIMIT_FILE_SIZE") {
+        return res.status(400).json({ error: "Photo trop volumineuse (20 Mo maximum)." });
+      }
+      return res.status(400).json({ error: "Impossible d'importer cette photo." });
+    }
+    const file = req.file;
+    if (!file) return res.status(400).json({ error: "Aucune photo reçue." });
+
+    const course = await queryOne<CourseRow>("SELECT * FROM courses WHERE id = ? AND user_id = ?", [
+      req.params.id,
+      req.userId!,
+    ]);
+    if (!course || course.storage_path || course.status !== "uploaded") {
+      return res.status(404).json({ error: "Cours introuvable." });
+    }
+    const existing = await queryOne<{ count: number }>("SELECT COUNT(*) as count FROM course_photos WHERE course_id = ?", [course.id]);
+    const position = Number(existing?.count ?? 0);
+    if (position >= MAX_PHOTOS) {
+      return res.status(400).json({ error: `${MAX_PHOTOS} photos maximum par cours.` });
+    }
+
+    const ext = file.mimetype.split("/")[1] === "jpeg" ? "jpg" : file.mimetype.split("/")[1];
+    const storagePath = await saveFile(file.buffer, `${uuid()}.${ext}`, file.mimetype, `courses/${req.userId}`);
+    const now = new Date().toISOString();
+    await run("INSERT INTO course_photos (id, course_id, storage_path, mime_type, position, created_at) VALUES (?, ?, ?, ?, ?, ?)", [
+      uuid(),
+      course.id,
+      storagePath,
+      file.mimetype,
+      position,
+      now,
+    ]);
+    const total = position + 1;
+    await run("UPDATE courses SET title = ?, updated_at = ? WHERE id = ?", [
+      total > 1 ? `Photos de cours (${total} pages)` : "Photo de cours",
+      now,
+      course.id,
+    ]);
+
+    const updated = (await queryOne<CourseRow>("SELECT * FROM courses WHERE id = ?", [course.id]))!;
+    res.status(201).json({ course: await serializeCourse(updated) });
+  });
+});
+
 coursesRouter.get("/:id", async (req, res) => {
   const row = await queryOne<CourseRow>("SELECT * FROM courses WHERE id = ? AND user_id = ?", [
     req.params.id,
