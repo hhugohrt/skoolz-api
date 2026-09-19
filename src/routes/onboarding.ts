@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { queryAll, run, getUserById, sanitizeUser } from "../db.js";
+import { isEmailConfigured } from "../lib/email.js";
 import { requireAuth } from "../middleware/requireAuth.js";
 
 export const onboardingRouter = Router();
@@ -29,6 +30,12 @@ onboardingRouter.post("/", requireAuth, async (req, res) => {
   }
 
   const userId = req.userId!;
+
+  // L'adresse e-mail doit être confirmée pour terminer l'inscription (sauf si l'envoi d'e-mails n'est pas configuré).
+  const current = await getUserById(userId);
+  if (current && !current.email_verified && isEmailConfigured()) {
+    return res.status(403).json({ error: "Confirme ton adresse e-mail pour continuer." });
+  }
 
   await run("UPDATE users SET level = ?, theme = ?, onboarding_completed = 1 WHERE id = ?", [
     level,
