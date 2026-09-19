@@ -16,7 +16,7 @@ async function startCheckout(userId: string, plan: PlanId, redirectUrl: string, 
     plan,
     new Date().toISOString(),
   ]);
-  return url;
+  return { url, sessionId: checkoutId };
 }
 
 // L'élève s'abonne lui-même : renvoie l'adresse de la page de paiement Whop.
@@ -29,8 +29,7 @@ billingRouter.post("/checkout", requireAuth, async (req, res) => {
   if (isPremium(user)) return res.status(409).json({ error: "Tu es déjà abonné." });
 
   try {
-    const url = await startCheckout(req.userId!, plan, `${appUrl()}/app/courses?paid=1`, "student");
-    res.json({ url });
+    res.json(await startCheckout(req.userId!, plan, `${appUrl()}/app/courses?paid=1`, "student"));
   } catch (err) {
     if (err instanceof WhopError) return res.status(502).json({ error: err.message });
     throw err;
@@ -66,8 +65,7 @@ billingRouter.post("/parent/:token/checkout", async (req, res) => {
   if (!isWhopConfigured()) return res.status(503).json({ error: "Le paiement n'est pas encore disponible." });
 
   try {
-    const url = await startCheckout(user.id, plan, `${appUrl()}/pay/${req.params.token}?paid=1`, "parent");
-    res.json({ url });
+    res.json(await startCheckout(user.id, plan, `${appUrl()}/pay/${req.params.token}?paid=1`, "parent"));
   } catch (err) {
     if (err instanceof WhopError) return res.status(502).json({ error: err.message });
     throw err;
