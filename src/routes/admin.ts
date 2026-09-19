@@ -162,6 +162,26 @@ adminRouter.patch("/users/:id", async (req, res) => {
   res.json({ user: serializeUser(row) });
 });
 
+// Suppression groupée : ignore ton propre compte et les administrateurs, et dit combien ont été supprimés.
+adminRouter.post("/users/bulk-delete", async (req, res) => {
+  const ids = req.body?.ids;
+  if (!Array.isArray(ids) || ids.length === 0 || ids.length > 100 || ids.some((id) => typeof id !== "string")) {
+    return res.status(400).json({ error: "Sélection invalide." });
+  }
+  let deleted = 0;
+  let skipped = 0;
+  for (const id of ids as string[]) {
+    const target = id === req.userId ? undefined : await getUserById(id);
+    if (!target || isAdmin(target)) {
+      skipped++;
+      continue;
+    }
+    await deleteUserAccount(target.id);
+    deleted++;
+  }
+  res.json({ deleted, skipped });
+});
+
 adminRouter.delete("/users/:id", async (req, res) => {
   if (req.params.id === req.userId) return res.status(400).json({ error: "Tu ne peux pas supprimer ton propre compte ici." });
   const target = await getUserById(req.params.id);
