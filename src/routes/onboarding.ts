@@ -5,7 +5,7 @@ import { requireAuth } from "../middleware/requireAuth.js";
 
 export const onboardingRouter = Router();
 
-const VALID_LEVELS = ["3e", "seconde", "premiere", "terminale", "superieur"];
+const VALID_LEVELS = ["6e", "5e", "4e", "3e", "seconde", "premiere", "terminale", "superieur"];
 const VALID_THEMES = ["light", "dark", "auto"];
 
 onboardingRouter.get("/subjects", requireAuth, async (req, res) => {

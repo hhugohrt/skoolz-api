@@ -91,7 +91,7 @@ app.patch("/api/me", requireAuth, async (req, res) => {
       return res.status(400).json({ error: "Prénom invalide." });
     }
   }
-  if (level !== undefined && (typeof level !== "string" || !["3e", "seconde", "premiere", "terminale", "superieur"].includes(level))) {
+  if (level !== undefined && (typeof level !== "string" || !["6e", "5e", "4e", "3e", "seconde", "premiere", "terminale", "superieur"].includes(level))) {
     return res.status(400).json({ error: "Niveau invalide." });
   }
   if (subjectIds !== undefined) {
