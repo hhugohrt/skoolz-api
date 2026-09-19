@@ -1,4 +1,5 @@
 import { isPremium } from "./lib/billing.js";
+import { isAdmin } from "./lib/admin.js";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createClient, type InValue } from "@libsql/client";
@@ -256,6 +257,7 @@ export function sanitizeUser(user: DbUser) {
     onboardingCompleted: Boolean(user.onboarding_completed),
     emailVerified: Boolean(user.email_verified),
     isPremium: isPremium(user),
+    isAdmin: isAdmin(user),
     createdAt: user.created_at,
   };
 }

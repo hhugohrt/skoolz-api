@@ -10,9 +10,10 @@ function premiumEmails(): Set<string> {
   );
 }
 
-export function isPremium(user: Pick<DbUser, "plan" | "email"> | undefined): boolean {
+export function isPremium(user: Pick<DbUser, "plan" | "email" | "email_verified"> | undefined): boolean {
   if (!user) return false;
-  return user.plan === "premium" || premiumEmails().has(user.email.toLowerCase());
+  // Une adresse de la liste ne compte que si elle est confirmée (sinon on pourrait s'inscrire avec l'adresse d'un autre).
+  return user.plan === "premium" || (Boolean(user.email_verified) && premiumEmails().has(user.email.toLowerCase()));
 }
 
 // Mots de remplissage : l'aperçu flouté ressemble à un vrai cours, mais le contenu réel ne quitte jamais

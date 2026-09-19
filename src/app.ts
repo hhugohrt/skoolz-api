@@ -9,10 +9,11 @@ import { onboardingRouter } from "./routes/onboarding.js";
 import { coursesRouter } from "./routes/courses.js";
 import { sheetsRouter } from "./routes/sheets.js";
 import { billingRouter } from "./routes/billing.js";
+import { adminRouter } from "./routes/admin.js";
+import { deleteUserAccount } from "./lib/accountDeletion.js";
 import { uploadSessionsRouter } from "./routes/uploadSessions.js";
 import { requireAuth } from "./middleware/requireAuth.js";
-import { getUserById, sanitizeUser, queryAll, queryOne, run } from "./db.js";
-import { deleteFile } from "./lib/storage.js";
+import { getUserById, sanitizeUser, queryOne, run } from "./db.js";
 
 const FRONTEND_URL = process.env.FRONTEND_URL ?? "http://localhost:5220";
 const FRONTEND_PORT = new URL(FRONTEND_URL).port;
@@ -126,24 +127,7 @@ app.delete("/api/me", requireAuth, async (req, res) => {
   if (req.body?.confirm !== "SUPPRIMER") {
     return res.status(400).json({ error: "Confirmation manquante." });
   }
-  const userId = req.userId!;
-
-  const rows = [
-    ...(await queryAll<{ p: string | null }>("SELECT storage_path AS p FROM courses WHERE user_id = ?", [userId])),
-    ...(await queryAll<{ p: string | null }>(
-      "SELECT cp.storage_path AS p FROM course_photos cp JOIN courses c ON c.id = cp.course_id WHERE c.user_id = ?",
-      [userId],
-    )),
-    ...(await queryAll<{ p: string | null }>(
-      "SELECT sp.storage_path AS p FROM upload_session_photos sp JOIN upload_sessions s ON s.id = sp.session_id WHERE s.user_id = ?",
-      [userId],
-    )),
-  ];
-  await Promise.all(rows.map((row) => (row.p ? deleteFile(row.p).catch(() => {}) : undefined)));
-
-  // Les matières créées par l'élève restent disponibles pour les autres : on retire juste le lien.
-  await run("UPDATE subjects SET created_by = NULL WHERE created_by = ?", [userId]);
-  await run("DELETE FROM users WHERE id = ?", [userId]);
+  await deleteUserAccount(req.userId!);
   res.status(204).end();
 });
 
@@ -153,6 +137,7 @@ app.use("/api/onboarding", onboardingRouter);
 app.use("/api/courses", coursesRouter);
 app.use("/api/sheets", sheetsRouter);
 app.use("/api/billing", billingRouter);
+app.use("/api/admin", adminRouter);
 app.use("/api/upload-sessions", uploadSessionsRouter);
 
 app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
