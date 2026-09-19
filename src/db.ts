@@ -205,6 +205,14 @@ await run(`CREATE TABLE IF NOT EXISTS checkouts (
   plan TEXT NOT NULL,
   created_at TEXT NOT NULL
 )`);
+// Un long cours donne plusieurs fiches : rang (part) et nombre total (part_count).
+for (const column of ["part", "part_count"]) {
+  try {
+    await run(`ALTER TABLE revision_sheets ADD COLUMN ${column} INTEGER NOT NULL DEFAULT 1`);
+  } catch (err) {
+    if (!/duplicate column|already exists/i.test((err as Error).message)) throw err;
+  }
+}
 
 const DEFAULT_SUBJECTS = [
   "Français",

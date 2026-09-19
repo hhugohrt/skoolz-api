@@ -3,8 +3,14 @@ import { z } from "zod";
 import { readFile } from "./storage.js";
 
 const MODEL = process.env.OPENAI_MODEL || "gpt-4o-mini";
-const MAX_IMAGES = 12;
+const MAX_IMAGES = 20;
+const PHOTOS_PER_SHEET = 3;
 const MAX_SECTIONS = 40;
+// Un long cours peut compter bien plus de sections que 40 : elles sont ensuite réparties en plusieurs fiches.
+const MAX_SECTIONS_TOTAL = 200;
+const SPLIT_TARGET_CHARS = 3600;
+const SPLIT_ABOVE_CHARS = 5200;
+const MAX_SHEETS = 8;
 const CHUNK_CHARS = 18_000;
 const MAX_TEXT_CHARS = 110_000;
 const MAX_OUTPUT_TOKENS = 12_000;
@@ -429,7 +435,7 @@ export async function generateRevisionSheet(courseText: string): Promise<Generat
     },
   ).catch(() => ({ title: parts[0].title, summary: parts[0].summary }));
 
-  return { title: overview.title, summary: overview.summary, sections: merged.slice(0, MAX_SECTIONS) };
+  return { title: overview.title, summary: overview.summary, sections: merged.slice(0, MAX_SECTIONS_TOTAL) };
 }
 
 export interface ImageInput {
@@ -437,7 +443,7 @@ export interface ImageInput {
   mimeType: string;
 }
 
-export async function generateRevisionSheetFromImages(images: ImageInput[]): Promise<GeneratedSheet> {
+export async function generateRevisionSheetFromImages(images: ImageInput[], batchNote?: string): Promise<GeneratedSheet> {
   if (!process.env.OPENAI_API_KEY) {
     throw new AiNotConfiguredError(
       "L'analyse de photos nécessite une clé IA. Importe un fichier texte, PDF ou DOCX pour tester le mode local.",
@@ -462,7 +468,7 @@ export async function generateRevisionSheetFromImages(images: ImageInput[]): Pro
       ? `Voici ${pages.length} photos, les pages successives d'un même cours. Génère une seule fiche de révision, exhaustive.`
       : "Voici la photo d'un cours. Génère la fiche de révision, exhaustive.";
 
-  return buildSheet(IMAGE_SYSTEM_PROMPT, [{ type: "text", text: introText }, ...imageBlocks]);
+  return buildSheet(IMAGE_SYSTEM_PROMPT, [{ type: "text", text: batchNote ? `${introText}\n${batchNote}` : introText }, ...imageBlocks]);
 }
 
 const SUBJECT_PROMPT = `Tu classes une fiche de révision dans une matière scolaire.
@@ -491,4 +497,132 @@ export async function suggestSubject(
   if (!chosen) return null;
   const wanted = normalize(chosen);
   return subjects.find((s) => normalize(s.name) === wanted)?.id ?? null;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Plusieurs fiches pour un long cours : une fiche toutes les 1 à 3 pages, sans rien retirer du contenu.
+// ---------------------------------------------------------------------------------------------
+
+const SPLIT_PROMPT = `Tu reçois le plan d'une fiche de révision trop longue pour tenir sur une seule page A4 : une liste numérotée de sections (index, type, titre, longueur en caractères).
+Regroupe les sections CONSÉCUTIVES en exactement N fiches thématiques cohérentes : une fiche = un sous-thème du cours. Aucune section ne doit être omise ni déplacée, l'ordre est conservé. Équilibre les tailles autour de la longueur cible, mais garde un sous-thème important dans une même fiche plutôt que de le couper. La section finale « À retenir » (type key_point), si elle existe, reste dans la dernière fiche.
+Réponds UNIQUEMENT avec un objet JSON {"sheets": [{"title": string (titre précis, moins de 70 caractères, qui rappelle le sujet du cours), "summary": string (1 à 2 phrases qui tutoient l'élève : "Dans cette fiche, tu vois..."), "from": entier, "to": entier}]}, où from et to sont l'index de la première et de la dernière section de la fiche (inclus).`;
+
+const SplitSchema = z.object({
+  sheets: z
+    .array(
+      z.object({
+        title: z.string().trim().min(1),
+        summary: z.string().trim().default(""),
+        from: z.number().int(),
+        to: z.number().int(),
+      }),
+    )
+    .min(1),
+});
+
+const sectionLength = (section: GeneratedSheet["sections"][number]) => (section.title?.length ?? 0) + section.content.length;
+const totalLength = (sheet: GeneratedSheet) => sheet.sections.reduce((sum, section) => sum + sectionLength(section), 0);
+
+type GroupRange = { from: number; to: number; title?: string; summary?: string };
+
+// Découpage de secours (ou sans IA) : on remplit chaque fiche jusqu'à la longueur cible, en coupant entre deux sections.
+function balancedRanges(sections: GeneratedSheet["sections"], count: number): GroupRange[] {
+  const total = sections.reduce((sum, section) => sum + sectionLength(section), 0);
+  const per = total / count;
+  const ranges: GroupRange[] = [];
+  let start = 0;
+  let acc = 0;
+  sections.forEach((section, index) => {
+    acc += sectionLength(section);
+    const remainingGroups = count - ranges.length - 1;
+    const remainingSections = sections.length - index - 1;
+    if (remainingGroups > 0 && acc >= per && remainingSections >= remainingGroups) {
+      ranges.push({ from: start, to: index });
+      start = index + 1;
+      acc = 0;
+    }
+  });
+  ranges.push({ from: start, to: sections.length - 1 });
+  return ranges;
+}
+
+// Les groupes proposés par l'IA doivent couvrir toutes les sections, dans l'ordre, sans trou ni chevauchement.
+function validRanges(ranges: GroupRange[], sectionCount: number): boolean {
+  if (ranges.length < 2) return false;
+  let expected = 0;
+  for (const range of ranges) {
+    if (range.from !== expected || range.to < range.from) return false;
+    expected = range.to + 1;
+  }
+  return expected === sectionCount;
+}
+
+export async function splitIntoSheets(sheet: GeneratedSheet): Promise<GeneratedSheet[]> {
+  const total = totalLength(sheet);
+  if (total <= SPLIT_ABOVE_CHARS || sheet.sections.length < 2) return [sheet];
+  const count = Math.min(MAX_SHEETS, sheet.sections.length, Math.max(2, Math.round(total / SPLIT_TARGET_CHARS)));
+
+  let ranges: GroupRange[] = [];
+  if (process.env.OPENAI_API_KEY) {
+    try {
+      const outline = sheet.sections.map((section, index) => `${index}. [${section.type}] ${section.title ?? "(sans titre)"} — ${sectionLength(section)} car.`).join("\n");
+      const proposed = await completeJson(
+        SPLIT_PROMPT,
+        `Cours : ${sheet.title}\nN = ${count} fiches, longueur cible ≈ ${SPLIT_TARGET_CHARS} caractères chacune.\n\n${outline}`,
+        (raw) => {
+          const parsed = SplitSchema.safeParse(JSON.parse(raw ?? "{}"));
+          if (!parsed.success) throw new AiGenerationError("Réponse IA invalide (découpage).");
+          return parsed.data.sheets;
+        },
+      );
+      if (validRanges(proposed, sheet.sections.length)) ranges = proposed;
+      else console.error("Découpage IA incohérent : découpage automatique utilisé.");
+    } catch (err) {
+      console.error("Découpage IA ignoré:", (err as Error)?.message);
+    }
+  }
+  if (ranges.length === 0) ranges = balancedRanges(sheet.sections, count);
+
+  const n = ranges.length;
+  return ranges.map((range, index) => {
+    const label = `(${index + 1}/${n})`;
+    const baseTitle = range.title?.trim() || sheet.title;
+    return {
+      title: `${baseTitle} ${label}`,
+      summary: range.summary?.trim() || (index === 0 ? sheet.summary : ""),
+      sections: sheet.sections.slice(range.from, range.to + 1),
+    };
+  });
+}
+
+// Texte : une fiche complète, puis découpée en plusieurs fiches si elle dépasse une page ou deux.
+export async function generateSheetsFromText(courseText: string): Promise<GeneratedSheet[]> {
+  const sheet = await generateRevisionSheet(courseText);
+  if (!process.env.OPENAI_API_KEY) return [sheet];
+  return splitIntoSheets(sheet);
+}
+
+// Photos : une fiche toutes les 1 à 3 photos, réparties de façon équilibrée (7 photos → 3 fiches de 3, 2 et 2).
+export async function generateSheetsFromImages(images: ImageInput[]): Promise<GeneratedSheet[]> {
+  if (images.length <= PHOTOS_PER_SHEET) return [await generateRevisionSheetFromImages(images)];
+  if (!process.env.OPENAI_API_KEY) return [await generateRevisionSheetFromImages(images)];
+
+  const pages = images.slice(0, MAX_IMAGES);
+  const batchCount = Math.ceil(pages.length / PHOTOS_PER_SHEET);
+  const base = Math.floor(pages.length / batchCount);
+  const extra = pages.length % batchCount;
+  const batches: ImageInput[][] = [];
+  let cursor = 0;
+  for (let i = 0; i < batchCount; i++) {
+    const size = base + (i < extra ? 1 : 0);
+    batches.push(pages.slice(cursor, cursor + size));
+    cursor += size;
+  }
+
+  const sheets = await Promise.all(
+    batches.map((batch, index) =>
+      generateRevisionSheetFromImages(batch, `Ces photos forment le lot ${index + 1} sur ${batches.length} d'un cours plus long : traite UNIQUEMENT ces pages, de façon exhaustive.`),
+    ),
+  );
+  return sheets.map((sheet, index) => ({ ...sheet, title: `${sheet.title} (${index + 1}/${sheets.length})` }));
 }

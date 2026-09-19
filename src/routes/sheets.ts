@@ -23,6 +23,8 @@ interface SheetRow {
   subject_id: string | null;
   subject_name: string | null;
   chapter: string | null;
+  part: number | string;
+  part_count: number | string;
 }
 
 interface SectionRow {
@@ -41,7 +43,7 @@ const LIST_QUERY = `
   JOIN courses ON courses.id = sheets.course_id
   LEFT JOIN subjects ON subjects.id = courses.subject_id
   WHERE sheets.user_id = ?
-  ORDER BY sheets.created_at DESC
+  ORDER BY sheets.created_at DESC, sheets.part ASC
 `;
 
 function serializeSheet(row: SheetRow, locked = false) {
@@ -55,6 +57,8 @@ function serializeSheet(row: SheetRow, locked = false) {
     subjectId: row.subject_id,
     subjectName: row.subject_name,
     chapter: row.chapter,
+    part: Number(row.part ?? 1),
+    partCount: Number(row.part_count ?? 1),
     createdAt: row.created_at,
   };
 }
@@ -93,9 +97,16 @@ async function loadSheetDetail(id: string, userId: string, premium: boolean) {
     [row.id],
   );
 
+  // Les autres fiches du même cours (un long cours donne plusieurs fiches) pour naviguer de l'une à l'autre.
+  const siblings = await queryAll<{ id: string; title: string; part: number | string }>(
+    "SELECT id, title, part FROM revision_sheets WHERE course_id = ? AND user_id = ? ORDER BY part ASC, created_at ASC",
+    [row.course_id, userId],
+  );
+
   const locked = !premium;
   return {
     ...serializeSheet(row, locked),
+    siblings: siblings.map((s) => ({ id: s.id, title: s.title, part: Number(s.part) })),
     sections: sections.map((s) => ({
       id: s.id,
       type: s.type,

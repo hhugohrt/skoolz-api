@@ -8,8 +8,8 @@ import { requireAuth } from "../middleware/requireAuth.js";
 import { saveFile, deleteFile } from "../lib/storage.js";
 import { extractText, UnsupportedFileError } from "../lib/extractText.js";
 import {
-  generateRevisionSheet,
-  generateRevisionSheetFromImages,
+  generateSheetsFromText,
+  generateSheetsFromImages,
   suggestSubject,
   AiNotConfiguredError,
   AiGenerationError,
@@ -306,48 +306,57 @@ coursesRouter.post("/:id/generate", async (req, res) => {
       [row.id],
     );
 
-    let sheet;
+    let generated;
     if (photos.length > 0) {
-      sheet = await generateRevisionSheetFromImages(
+      generated = await generateSheetsFromImages(
         photos.map((p) => ({ path: p.storage_path, mimeType: p.mime_type })),
       );
     } else if (!row.storage_path || !row.mime_type) {
       throw new UnsupportedFileError("Ce cours n'a pas de contenu à analyser.");
     } else if (row.mime_type.startsWith("image/")) {
-      sheet = await generateRevisionSheetFromImages([{ path: row.storage_path, mimeType: row.mime_type }]);
+      generated = await generateSheetsFromImages([{ path: row.storage_path, mimeType: row.mime_type }]);
     } else {
       const text = await extractText(row.storage_path, row.mime_type);
       if (text.trim().length < 20) {
         throw new UnsupportedFileError("Le fichier ne contient pas assez de texte exploitable.");
       }
-      sheet = await generateRevisionSheet(text);
+      generated = await generateSheetsFromText(text);
     }
 
     // Régénérer (bouton "Réessayer") remplace la fiche précédente au lieu d'en empiler une seconde.
     // Les sections partent avec elle (ON DELETE CASCADE).
     await run("DELETE FROM revision_sheets WHERE course_id = ?", [row.id]);
 
-    const sheetId = uuid();
+    // Un long cours donne plusieurs fiches (part 1/n, 2/n…). Chacune est enregistrée avec ses sections.
+    const sheetIds: string[] = [];
+    // Même date pour toutes les fiches du cours : dans les listes, elles restent groupées et dans l'ordre.
     const createdAt = new Date().toISOString();
-    await run(
-      "INSERT INTO revision_sheets (id, course_id, user_id, title, summary, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-      [sheetId, row.id, req.userId!, sheet.title, sheet.summary, createdAt],
-    );
+    for (const [index, sheet] of generated.entries()) {
+      const sheetId = uuid();
+      sheetIds.push(sheetId);
+      await run(
+        "INSERT INTO revision_sheets (id, course_id, user_id, title, summary, created_at, part, part_count) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        [sheetId, row.id, req.userId!, sheet.title, sheet.summary, createdAt, index + 1, generated.length],
+      );
 
-    // Un seul INSERT multi-lignes plutôt qu'un aller-retour base par section.
-    await run(
-      `INSERT INTO revision_sheet_sections (id, sheet_id, type, title, content, position) VALUES ${sheet.sections
-        .map(() => "(?, ?, ?, ?, ?, ?)")
-        .join(", ")}`,
-      sheet.sections.flatMap((section, index) => [
-        uuid(),
-        sheetId,
-        section.type,
-        section.title ?? null,
-        section.content,
-        index,
-      ]),
-    );
+      // Un seul INSERT multi-lignes plutôt qu'un aller-retour base par section.
+      await run(
+        `INSERT INTO revision_sheet_sections (id, sheet_id, type, title, content, position) VALUES ${sheet.sections
+          .map(() => "(?, ?, ?, ?, ?, ?)")
+          .join(", ")}`,
+        sheet.sections.flatMap((section, position) => [
+          uuid(),
+          sheetId,
+          section.type,
+          section.title ?? null,
+          section.content,
+          position,
+        ]),
+      );
+    }
+    const sheetId = sheetIds[0];
+    // Pour proposer la matière, on regarde l'ensemble du cours.
+    const wholeCourse = { ...generated[0], sections: generated.flatMap((g) => g.sections) };
 
     await run("UPDATE courses SET status = 'completed', updated_at = ? WHERE id = ?", [
       new Date().toISOString(),
@@ -365,14 +374,14 @@ coursesRouter.post("/:id/generate", async (req, res) => {
         if (candidates.length === 0) {
           candidates = await queryAll<{ id: string; name: string }>("SELECT id, name FROM subjects WHERE is_custom = 0");
         }
-        const subjectId = await suggestSubject(sheet, candidates);
+        const subjectId = await suggestSubject(wholeCourse, candidates);
         suggestedSubject = candidates.find((s) => s.id === subjectId) ?? null;
       } catch (subjectErr) {
         console.error("Suggestion de matière ignorée:", (subjectErr as Error)?.message);
       }
     }
 
-    res.json({ sheetId, suggestedSubject });
+    res.json({ sheetId, sheetIds, suggestedSubject });
   } catch (err) {
     // Une génération qui échoue ne doit pas consommer le quota de l'élève.
     await run("DELETE FROM ai_usage WHERE id = ?", [usageId]).catch(() => {});
